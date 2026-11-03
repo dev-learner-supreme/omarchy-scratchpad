@@ -581,7 +581,7 @@ BarWidget {
     pendingAfterLast = true
     pendingLineIndex = -1
     pendingCharOffset = -1
-    pendingCursorPos = -1
+    pendingCursorPos = currentText.length
     if (panel.loadedContent) {
       panel.loadedContent.forceActiveFocus()
     }
@@ -719,6 +719,8 @@ BarWidget {
       root.commitCurrentEditingTask(false)
     }
     autoPreviewTimer.stop()
+    var targetCursor = root.pendingCursorPos
+    var wasAfterLast = root.pendingAfterLast
     clearPendingCursor()
 
     if (activeTab === "tasks") {
@@ -736,6 +738,11 @@ BarWidget {
         Qt.callLater(function() {
           if (panel.loadedContent && panel.loadedContent.editor) {
             panel.loadedContent.editor.forceActiveFocus()
+            if (wasAfterLast) {
+              panel.loadedContent.editor.cursorPosition = panel.loadedContent.editor.text.length
+            } else if (targetCursor >= 0) {
+              panel.loadedContent.editor.cursorPosition = Math.min(panel.loadedContent.editor.text.length, targetCursor)
+            }
           }
         })
         autoPreviewTimer.restart()
@@ -756,6 +763,11 @@ BarWidget {
         Qt.callLater(function() {
           if (panel.loadedContent && panel.loadedContent.editor) {
             panel.loadedContent.editor.forceActiveFocus()
+            if (wasAfterLast) {
+              panel.loadedContent.editor.cursorPosition = panel.loadedContent.editor.text.length
+            } else if (targetCursor >= 0) {
+              panel.loadedContent.editor.cursorPosition = Math.min(panel.loadedContent.editor.text.length, targetCursor)
+            }
           }
         })
       }
@@ -823,7 +835,7 @@ BarWidget {
           }
         }
 
-        if (root.autoShiftEnabled) {
+        if (root.autoShiftEnabled && root.activeTab === "tasks") {
           autoPreviewTimer.restart()
         }
       }
@@ -858,7 +870,7 @@ BarWidget {
     updateCounts(newText)
     statusMessage = "..."
     saveDebounceTimer.restart()
-    if (autoShiftEnabled) {
+    if (autoShiftEnabled && activeTab === "tasks") {
       autoPreviewTimer.restart()
     }
   }
@@ -891,8 +903,16 @@ BarWidget {
     if (root.editingLineIndex >= 0) {
       root.commitCurrentEditingTask(false)
     }
+    if (panel.loadedContent && panel.loadedContent.editor && root.viewMode === "edit") {
+      root.currentText = panel.loadedContent.editor.text
+      if (root.activeTab === "tasks") {
+        root.tasksText = root.currentText
+      } else {
+        root.scratchpadText = root.currentText
+      }
+    }
     saveNow()
-    Quickshell.execDetached(["wl-copy", currentText])
+    Quickshell.execDetached(["wl-copy", "--", currentText])
     Quickshell.execDetached(["omarchy-notification-send", strings.t("scratchpad.title"), strings.t("scratchpad.copied")])
     statusMessage = strings.t("scratchpad.copied")
   }
@@ -966,6 +986,24 @@ BarWidget {
     if (bulletMatch && isAtEnd) {
       event.accepted = true
       editor.insert(pos, "\n" + bulletMatch[1])
+      return
+    }
+
+    // 5. Empty numbered item (e.g. "1. ") -> clear prefix to exit list cleanly
+    var emptyNum = line.match(/^(\s*\d+\.\s*)$/)
+    if (emptyNum) {
+      event.accepted = true
+      editor.text = txt.substring(0, lineStart) + txt.substring(lineEnd)
+      editor.cursorPosition = lineStart
+      return
+    }
+
+    // 6. Numbered list continuation (1. item -> 2. ) -> only continue if at end of line with text
+    var numMatch = line.match(/^(\s*)(\d+)\.\s+(.+)$/)
+    if (numMatch && isAtEnd) {
+      event.accepted = true
+      var nextNum = parseInt(numMatch[2], 10) + 1
+      editor.insert(pos, "\n" + numMatch[1] + nextNum + ". ")
       return
     }
 
@@ -1060,10 +1098,11 @@ BarWidget {
       if (raw.trim().startsWith("```")) {
         if (inCodeBlock) {
           codeLines.push(raw)
+          var codeBody = (codeLines.length >= 2) ? codeLines.slice(1, -1).join("\n") : ""
           pushItem({
             lineIndex: codeStartIdx,
             itemType: "code",
-            content: codeLines.join("\n"),
+            content: codeBody,
             indent: 0
           })
           codeLines = []
@@ -1161,22 +1200,34 @@ BarWidget {
         continue
       }
 
-      // Regular text (only if not completely blank line)
-      if (raw.trim().length > 0) {
-        pushItem({
-          lineIndex: i,
-          itemType: "text",
-          content: raw,
-          indent: 0
-        })
+      // Blank line / paragraph spacer
+      if (raw.trim().length === 0) {
+        if (root.activeTab === "scratchpad") {
+          pushItem({
+            lineIndex: i,
+            itemType: "spacer",
+            content: "",
+            indent: 0
+          })
+        }
+        continue
       }
+
+      // Regular text
+      pushItem({
+        lineIndex: i,
+        itemType: "text",
+        content: raw,
+        indent: 0
+      })
     }
 
     if (inCodeBlock && codeLines.length > 0) {
+      var unclosedBody = (codeLines.length > 1) ? codeLines.slice(1).join("\n") : ""
       pushItem({
         lineIndex: codeStartIdx,
         itemType: "code",
-        content: codeLines.join("\n"),
+        content: unclosedBody,
         indent: 0
       })
     }
@@ -1290,22 +1341,17 @@ BarWidget {
     onTriggered: root.saveNow()
   }
 
-  // Auto-shift back to preview mode after user pauses typing in edit mode (Tasks & Scratchpad)
+  // Auto-shift back to preview mode after user pauses typing in edit mode (Tasks only)
   Timer {
     id: autoPreviewTimer
     interval: 3000
     repeat: false
     onTriggered: {
-      if (root.viewMode === "edit" && root.opened) {
+      if (root.activeTab === "tasks" && root.tasksViewMode === "edit" && root.opened) {
         root.saveNow()
         root.refreshParsedItems()
-        if (root.activeTab === "tasks") {
-          root.tasksViewMode = "preview"
-          root.persistViewMode("tasks", "preview")
-        } else {
-          root.scratchpadViewMode = "preview"
-          root.persistViewMode("scratchpad", "preview")
-        }
+        root.tasksViewMode = "preview"
+        root.persistViewMode("tasks", "preview")
         Qt.callLater(function() {
           if (panel.loadedContent) {
             panel.loadedContent.forceActiveFocus()
@@ -1656,6 +1702,13 @@ BarWidget {
                 onClicked: root.sweepCompletedTasks()
               }
 
+              // Toggle Edit / Preview Mode (Ctrl+E)
+              PanelActionButton {
+                iconText: (root.viewMode === "preview") ? "\uf044" : "\uf06e"
+                tooltipText: (root.viewMode === "preview") ? "Edit Note (Ctrl+E)" : "Preview Note (Ctrl+E)"
+                onClicked: root.toggleViewMode(true)
+              }
+
               // Copy Note
               PanelActionButton {
                 iconText: "\uf0c5"
@@ -1827,7 +1880,7 @@ BarWidget {
               }
 
               Keys.onPressed: function(event) {
-                if (root.autoShiftEnabled) {
+                if (root.autoShiftEnabled && root.activeTab === "tasks") {
                   autoPreviewTimer.restart()
                 }
                 if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_K) {
@@ -2164,6 +2217,7 @@ BarWidget {
                         if (modelData.itemType === "quote") return quotePreviewDelegate
                         if (modelData.itemType === "code") return codePreviewDelegate
                         if (modelData.itemType === "divider") return dividerPreviewDelegate
+                        if (modelData.itemType === "spacer") return spacerPreviewDelegate
                         return textPreviewDelegate
                       }
                     }
@@ -2658,7 +2712,7 @@ BarWidget {
                             font.bold: true
                             color: modelData.level === 1 ? Commons.Color.accent : Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.PlainText
+                            textFormat: TextEdit.MarkdownText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -2736,7 +2790,7 @@ BarWidget {
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.PlainText
+                            textFormat: TextEdit.MarkdownText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -2814,7 +2868,7 @@ BarWidget {
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.PlainText
+                            textFormat: TextEdit.MarkdownText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -2884,7 +2938,7 @@ BarWidget {
                             font.italic: true
                             color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.75)
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.PlainText
+                            textFormat: TextEdit.MarkdownText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -2967,7 +3021,25 @@ BarWidget {
                       }
                     }
 
-                    // 8. Plain Text
+                    // 8. Spacer (Paragraph Breaks in Scratchpad Preview)
+                    Component {
+                      id: spacerPreviewDelegate
+
+                      Item {
+                        width: previewColumn.width
+                        height: Style.space(10)
+                        implicitHeight: Style.space(10)
+
+                        MouseArea {
+                          anchors.fill: parent
+                          cursorShape: Qt.IBeamCursor
+                          onClicked: root.setPendingCursorOnLine(modelData.lineIndex, "spacer", 0)
+                          onDoubleClicked: root.toggleViewMode(true)
+                        }
+                      }
+                    }
+
+                    // 9. Plain / Formatted Text
                     Component {
                       id: textPreviewDelegate
 
@@ -2983,7 +3055,7 @@ BarWidget {
                           font.pixelSize: Style.font.body
                           color: Commons.Color.foreground
                           wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                          textFormat: TextEdit.PlainText
+                          textFormat: TextEdit.MarkdownText
                           readOnly: true
                           selectByMouse: false
                           activeFocusOnTab: false
