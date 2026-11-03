@@ -1,0 +1,10 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor and system artifacts
+*~
+*.swp
+*.swo
+.DS_Store

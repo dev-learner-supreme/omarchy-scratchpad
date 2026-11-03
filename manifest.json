@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "arun.scratchpad",
+  "name": "Scratchpad",
+  "version": "1.1.0",
+  "author": "Arun Rao Balappa",
+  "description": "Drop-down Markdown Scratchpad with live preview and multi-note memory",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Scratchpad",
+    "description": "Drop-down Markdown Scratchpad with live preview and multi-note memory",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "centerEnd"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "scratchpad.title": "Markdown Scratchpad",
+  "scratchpad.tooltip": "Markdown Scratchpad (Alt + `)",
+  "scratchpad.tabTasks": "Tasks",
+  "scratchpad.tabScratch": "Scratchpad",
+  "scratchpad.edit": "Edit",
+  "scratchpad.preview": "Preview",
+  "scratchpad.placeholder": "Type markdown notes here... Use `- [ ] ` for checklists, `# ` for headers.",
+  "scratchpad.shortcutsHint": "Esc Close • Ctrl+Enter Checkbox • Ctrl+E Preview • Ctrl+1..2 Tabs",
+  "scratchpad.copy": "Copy All",
+  "scratchpad.copied": "Copied to clipboard",
+  "scratchpad.clear": "Clear",
+  "scratchpad.openEditor": "Open in Editor",
+  "scratchpad.words": {
+    "one": "%1 word",
+    "other": "%1 words"
+  },
+  "scratchpad.chars": {
+    "one": "%1 char",
+    "other": "%1 chars"
+  },
+  "scratchpad.saved": "Saved"
+}
