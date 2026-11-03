@@ -616,6 +616,9 @@ BarWidget {
     scratchpadFile.reload()
     var targetTxt = (activeTab === "tasks") ? tasksText : scratchpadText
     syncActiveTabContent(targetTxt)
+    if (activeTab === "scratchpad") {
+      scratchpadViewMode = "preview"
+    }
     Qt.callLater(function() {
       if (panel.loadedContent) {
         if (root.viewMode === "preview") {
@@ -687,6 +690,9 @@ BarWidget {
 
     // 2. Switch tab
     activeTab = tab
+    if (tab === "scratchpad") {
+      scratchpadViewMode = "preview"
+    }
 
     // 3. Immediately update currentText from destination tab's in-memory text
     var targetText = (tab === "tasks") ? tasksText : scratchpadText
@@ -750,6 +756,10 @@ BarWidget {
     } else {
       // Scratchpad tab: freely toggle between edit and preview, NO auto-shift timer!
       if (scratchpadViewMode === "edit") {
+        if (panel.loadedContent && panel.loadedContent.editor) {
+          currentText = panel.loadedContent.editor.text
+          scratchpadText = currentText
+        }
         saveNow()
         refreshParsedItems()
         scratchpadViewMode = "preview"
@@ -772,6 +782,32 @@ BarWidget {
         })
       }
     }
+  }
+
+  function saveAndSwitchToPreview() {
+    if (panel.loadedContent && panel.loadedContent.editor) {
+      currentText = panel.loadedContent.editor.text
+      scratchpadText = currentText
+    }
+    saveNow()
+    refreshParsedItems()
+    scratchpadViewMode = "preview"
+    persistViewMode("scratchpad", "preview")
+    Qt.callLater(function() {
+      if (panel.loadedContent) {
+        panel.loadedContent.forceActiveFocus()
+      }
+    })
+  }
+
+  function switchToEditMode() {
+    scratchpadViewMode = "edit"
+    persistViewMode("scratchpad", "edit")
+    Qt.callLater(function() {
+      if (panel.loadedContent && panel.loadedContent.editor) {
+        panel.loadedContent.editor.forceActiveFocus()
+      }
+    })
   }
 
   function shiftToEditAndType(key, text) {
@@ -1182,13 +1218,19 @@ BarWidget {
         continue
       }
 
-      // Blockquotes: > quote
+      // Blockquotes: > quote (grouped for contiguous blockquotes)
       var quoteMatch = raw.match(/^>\s*(.*)$/)
       if (quoteMatch) {
+        var quoteLines = [quoteMatch[1]]
+        var quoteStartIdx = i
+        while (i + 1 < lines.length && lines[i + 1].match(/^>\s*(.*)$/)) {
+          i++
+          quoteLines.push(lines[i].match(/^>\s*(.*)$/)[1])
+        }
         pushItem({
-          lineIndex: i,
+          lineIndex: quoteStartIdx,
           itemType: "quote",
-          content: quoteMatch[1],
+          content: quoteLines.join("\n"),
           indent: 0
         })
         continue
@@ -1197,6 +1239,23 @@ BarWidget {
       // Dividers: --- or ***
       if (raw.trim() === "---" || raw.trim() === "***") {
         pushItem({ lineIndex: i, itemType: "divider", content: "", indent: 0 })
+        continue
+      }
+
+      // Markdown Tables (| ... |) grouped into a single table block
+      if (raw.trim().startsWith("|") && raw.trim().endsWith("|")) {
+        var tableLines = [raw]
+        var tableStartIdx = i
+        while (i + 1 < lines.length && lines[i + 1].trim().startsWith("|") && lines[i + 1].trim().endsWith("|")) {
+          i++
+          tableLines.push(lines[i])
+        }
+        pushItem({
+          lineIndex: tableStartIdx,
+          itemType: "text",
+          content: tableLines.join("\n"),
+          indent: 0
+        })
         continue
       }
 
@@ -1472,6 +1531,7 @@ BarWidget {
         root.commitCurrentEditingTask(false)
       }
       root.saveNow()
+      root.scratchpadViewMode = "preview"
     }
   }
 
@@ -1627,11 +1687,9 @@ BarWidget {
                 return
               }
             } else {
-              if ((root.autoShiftEnabled || root.pendingCursorPos >= 0 || root.pendingAfterLast) && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Backspace || (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 32))) {
-                event.accepted = true
-                root.shiftToEditAndType(event.key, event.text)
-                return
-              }
+              // Scratchpad tab:
+              // Preview mode is read-only by default. Does NOT auto-shift on typing.
+              // To edit, click Edit button or press Ctrl+E.
             }
           }
         }
@@ -1743,7 +1801,7 @@ BarWidget {
           anchors.bottom: parent.bottom
           anchors.left: parent.left
           anchors.right: parent.right
-          height: Style.space(24)
+          height: Style.space(26)
 
           Rectangle {
             anchors.top: parent.top
@@ -1765,10 +1823,11 @@ BarWidget {
             textFormat: Text.PlainText
           }
 
-          // Right: Status indicator (Saved) - anchored right
+          // Right: Status indicator (Saved)
           Text {
             id: statusText
-            anchors.right: parent.right
+            anchors.right: (root.activeTab === "scratchpad") ? ((root.scratchpadViewMode === "edit") ? saveFooterButton.left : editFooterButton.left) : parent.right
+            anchors.rightMargin: (root.activeTab === "scratchpad") ? Style.space(8) : 0
             anchors.verticalCenter: parent.verticalCenter
             text: root.statusMessage
             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
@@ -1776,6 +1835,92 @@ BarWidget {
             font.bold: true
             color: Commons.Color.accent
             textFormat: Text.PlainText
+          }
+
+          // Manual Save Button (Scratchpad Edit Mode)
+          Rectangle {
+            id: saveFooterButton
+            visible: root.activeTab === "scratchpad" && root.scratchpadViewMode === "edit"
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            height: Style.space(20)
+            width: saveFooterRow.implicitWidth + Style.space(16)
+            radius: Style.space(4)
+            color: saveFooterHover.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.18)
+            border.width: 1
+            border.color: Commons.Color.accent
+
+            RowLayout {
+              id: saveFooterRow
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+
+              Text {
+                text: "\uf0c7"
+                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                font.pixelSize: Style.font.caption - 1
+                color: saveFooterHover.containsMouse ? Commons.Color.background : Commons.Color.accent
+              }
+
+              Text {
+                text: "Save"
+                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                font.pixelSize: Style.font.caption - 1
+                font.bold: true
+                color: saveFooterHover.containsMouse ? Commons.Color.background : Commons.Color.accent
+              }
+            }
+
+            MouseArea {
+              id: saveFooterHover
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.saveAndSwitchToPreview()
+            }
+          }
+
+          // Manual Edit Button (Scratchpad Preview Mode)
+          Rectangle {
+            id: editFooterButton
+            visible: root.activeTab === "scratchpad" && root.scratchpadViewMode === "preview"
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            height: Style.space(20)
+            width: editFooterRow.implicitWidth + Style.space(16)
+            radius: Style.space(4)
+            color: editFooterHover.containsMouse ? Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.15) : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.08)
+            border.width: 1
+            border.color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.2)
+
+            RowLayout {
+              id: editFooterRow
+              anchors.centerIn: parent
+              spacing: Style.space(4)
+
+              Text {
+                text: "\uf044"
+                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                font.pixelSize: Style.font.caption - 1
+                color: Commons.Color.foreground
+              }
+
+              Text {
+                text: "Edit"
+                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                font.pixelSize: Style.font.caption - 1
+                font.bold: true
+                color: Commons.Color.foreground
+              }
+            }
+
+            MouseArea {
+              id: editFooterHover
+              anchors.fill: parent
+              hoverEnabled: true
+              cursorShape: Qt.PointingHandCursor
+              onClicked: root.switchToEditMode()
+            }
           }
         }
 
@@ -1844,6 +1989,7 @@ BarWidget {
               selectionColor: Style.selectionFillFor(Commons.Color.foreground, Commons.Color.accent)
               selectedTextColor: Commons.Color.foreground
               font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+              font.features: ({ "calt": 1, "liga": 1 })
               font.pixelSize: Style.font.body
               focus: root.viewMode === "edit"
               text: root.currentText
@@ -1882,6 +2028,15 @@ BarWidget {
               Keys.onPressed: function(event) {
                 if (root.autoShiftEnabled && root.activeTab === "tasks") {
                   autoPreviewTimer.restart()
+                }
+                if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_S) {
+                  event.accepted = true
+                  if (root.activeTab === "scratchpad") {
+                    root.saveAndSwitchToPreview()
+                  } else {
+                    root.saveNow()
+                  }
+                  return
                 }
                 if ((event.modifiers & Qt.ControlModifier) && (event.modifiers & Qt.ShiftModifier) && event.key === Qt.Key_K) {
                   event.accepted = true
@@ -2567,8 +2722,10 @@ BarWidget {
                               visible: !taskRowLayout.isEditingThisTask
                               text: (modelData.cleanContent !== undefined && modelData.cleanContent.length > 0) ? modelData.cleanContent : "New task"
                               font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                              font.features: ({ "calt": 1, "liga": 1 })
                               font.pixelSize: Style.font.body
                               font.strikeout: modelData.checked
+                              textFormat: Text.MarkdownText
                               color: (modelData.content && modelData.content.length > 0)
                                 ? (modelData.checked ? Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45) : Commons.Color.foreground)
                                 : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.35)
@@ -2708,6 +2865,7 @@ BarWidget {
                             anchors.bottomMargin: Style.space(2)
                             text: modelData.content
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                            font.features: ({ "calt": 1, "liga": 1 })
                             font.pixelSize: modelData.level === 1 ? Style.font.title + Style.space(2) : (modelData.level === 2 ? Style.font.title : Style.font.body + Style.space(2))
                             font.bold: true
                             color: modelData.level === 1 ? Commons.Color.accent : Commons.Color.foreground
@@ -2787,6 +2945,7 @@ BarWidget {
                             anchors.fill: parent
                             text: modelData.content
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                            font.features: ({ "calt": 1, "liga": 1 })
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
@@ -2865,6 +3024,7 @@ BarWidget {
                             anchors.fill: parent
                             text: modelData.content
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                            font.features: ({ "calt": 1, "liga": 1 })
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
@@ -2934,6 +3094,7 @@ BarWidget {
                             anchors.fill: parent
                             text: modelData.content
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                            font.features: ({ "calt": 1, "liga": 1 })
                             font.pixelSize: Style.font.body
                             font.italic: true
                             color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.75)
@@ -2995,6 +3156,7 @@ BarWidget {
                           anchors.margins: Style.space(6)
                           text: modelData.content
                           font.family: Style.font.monospace
+                          font.features: ({ "calt": 1, "liga": 1 })
                           font.pixelSize: Style.font.caption
                           color: Commons.Color.foreground
                           wrapMode: Text.Wrap
@@ -3052,6 +3214,7 @@ BarWidget {
                           anchors.fill: parent
                           text: modelData.content
                           font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                          font.features: ({ "calt": 1, "liga": 1 })
                           font.pixelSize: Style.font.body
                           color: Commons.Color.foreground
                           wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
@@ -3195,6 +3358,7 @@ BarWidget {
             Text {
               text: root.draggedContent
               font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+              font.features: ({ "calt": 1, "liga": 1 })
               font.pixelSize: Style.font.body
               font.strikeout: root.draggedChecked
               color: root.draggedChecked
