@@ -42,6 +42,8 @@ BarWidget {
   property int editingLineIndex: -1
   property string activeEditingText: ""
   property int completedHeaderLineIndex: -1
+  property var activeItems: []
+  property var completedItems: []
   signal requestTaskFocus(int lineIndex)
 
   Timer {
@@ -1014,25 +1016,44 @@ BarWidget {
   // --- Typora Preview Renderer Parser ---
   function refreshParsedItems() {
     var lines = currentText.split("\n")
-    var res = []
+    var active = []
+    var completed = []
+    var seenCompleted = false
     var inCodeBlock = false
     var codeLines = []
     var codeStartIdx = -1
     var compHeaderLine = -1
 
+    function pushItem(item) {
+      if (root.activeTab === "tasks" && seenCompleted) {
+        completed.push(item)
+      } else {
+        active.push(item)
+      }
+    }
+
     for (var i = 0; i < lines.length; i++) {
       var raw = lines[i]
 
       // Identify Completed header line index for UI section separation
-      if (root.activeTab === "tasks" && compHeaderLine === -1 && raw.trim().match(/^#{1,6}\s+Completed$/i)) {
+      if (root.activeTab === "tasks" && !seenCompleted && raw.trim().match(/^#{1,6}\s+Completed$/i)) {
+        seenCompleted = true
         compHeaderLine = i
+        completed.push({
+          lineIndex: i,
+          itemType: "header",
+          level: 3,
+          content: "Completed",
+          indent: 0
+        })
+        continue
       }
 
       // Code blocks
       if (raw.trim().startsWith("```")) {
         if (inCodeBlock) {
           codeLines.push(raw)
-          res.push({
+          pushItem({
             lineIndex: codeStartIdx,
             itemType: "code",
             content: codeLines.join("\n"),
@@ -1064,7 +1085,7 @@ BarWidget {
         if (cleanContent.length === 0) {
           cleanContent = dueDate.length > 0 ? "New task" : (content.trim().length > 0 ? content.trim() : "New task")
         }
-        res.push({
+        pushItem({
           lineIndex: i,
           itemType: "task",
           checked: taskMatch[2].toLowerCase() === "x",
@@ -1079,7 +1100,7 @@ BarWidget {
       // Headers: # through ######
       var headerMatch = raw.match(/^(#{1,6})\s+(.*)$/)
       if (headerMatch) {
-        res.push({
+        pushItem({
           lineIndex: i,
           itemType: "header",
           level: headerMatch[1].length,
@@ -1093,7 +1114,7 @@ BarWidget {
       var bulletMatch = raw.match(/^(\s*[-*]\s+)(.*)$/)
       if (bulletMatch) {
         var indentSpaces = bulletMatch[1].match(/^\s*/)[0].length
-        res.push({
+        pushItem({
           lineIndex: i,
           itemType: "bullet",
           content: bulletMatch[2],
@@ -1105,7 +1126,7 @@ BarWidget {
       // Numbered list: 1. item
       var numMatch = raw.match(/^(\s*)(\d+)\.\s+(.*)$/)
       if (numMatch) {
-        res.push({
+        pushItem({
           lineIndex: i,
           itemType: "numbered",
           num: numMatch[2],
@@ -1118,7 +1139,7 @@ BarWidget {
       // Blockquotes: > quote
       var quoteMatch = raw.match(/^>\s*(.*)$/)
       if (quoteMatch) {
-        res.push({
+        pushItem({
           lineIndex: i,
           itemType: "quote",
           content: quoteMatch[1],
@@ -1129,13 +1150,13 @@ BarWidget {
 
       // Dividers: --- or ***
       if (raw.trim() === "---" || raw.trim() === "***") {
-        res.push({ lineIndex: i, itemType: "divider", content: "", indent: 0 })
+        pushItem({ lineIndex: i, itemType: "divider", content: "", indent: 0 })
         continue
       }
 
       // Regular text (only if not completely blank line)
       if (raw.trim().length > 0) {
-        res.push({
+        pushItem({
           lineIndex: i,
           itemType: "text",
           content: raw,
@@ -1145,7 +1166,7 @@ BarWidget {
     }
 
     if (inCodeBlock && codeLines.length > 0) {
-      res.push({
+      pushItem({
         lineIndex: codeStartIdx,
         itemType: "code",
         content: codeLines.join("\n"),
@@ -1153,8 +1174,25 @@ BarWidget {
       })
     }
 
-    completedHeaderLineIndex = compHeaderLine
-    parsedItems = res
+    // If completed has ONLY the header and NO tasks, discard completed section
+    if (completed.length > 0) {
+      var hasTask = false
+      for (var c = 0; c < completed.length; c++) {
+        if (completed[c].itemType === "task") {
+          hasTask = true
+          break
+        }
+      }
+      if (!hasTask) {
+        completed = []
+        compHeaderLine = -1
+      }
+    }
+
+    root.completedHeaderLineIndex = compHeaderLine
+    root.activeItems = active
+    root.completedItems = completed
+    root.parsedItems = active.concat(completed)
   }
 
   // Interactive checkbox toggle in preview mode with auto-move
@@ -1869,44 +1907,84 @@ BarWidget {
               implicitHeight: previewColumn.implicitHeight + (root.pendingAfterLast && root.activeTab === "tasks" ? Style.space(32) : 0) + Style.space(80)
 
               function findDropTarget(containerY) {
-                if (!previewRepeater || previewRepeater.count === 0) return null
-                var count = previewRepeater.count
-
-                var firstChild = previewRepeater.itemAt(0)
-                if (firstChild && containerY <= firstChild.y + firstChild.height / 2) {
-                  var firstData = root.parsedItems[0]
-                  return {
-                    index: 0,
-                    lineIndex: firstData ? firstData.lineIndex : 0,
-                    dropBefore: true
-                  }
-                }
-
-                for (var i = 0; i < count; i++) {
-                  var child = previewRepeater.itemAt(i)
-                  if (child) {
-                    var topY = child.y
-                    var bottomY = child.y + child.height
-                    var midY = child.y + child.height / 2
-
-                    if (containerY >= topY && containerY <= bottomY) {
-                      var itmData = root.parsedItems[i]
+                var activeCount = activeRepeater ? activeRepeater.count : 0
+                if (activeCount > 0) {
+                  var firstActive = activeRepeater.itemAt(0)
+                  if (firstActive) {
+                    var fY = firstActive.mapToItem(previewColumnContainer, 0, 0).y
+                    if (containerY <= fY + firstActive.height / 2) {
+                      var firstData = (root.activeTab === "tasks") ? root.activeItems[0] : root.parsedItems[0]
                       return {
-                        index: i,
-                        lineIndex: itmData ? itmData.lineIndex : -1,
-                        dropBefore: containerY < midY
+                        lineIndex: firstData ? firstData.lineIndex : 0,
+                        dropBefore: true
+                      }
+                    }
+                  }
+
+                  for (var i = 0; i < activeCount; i++) {
+                    var child = activeRepeater.itemAt(i)
+                    if (child) {
+                      var cY = child.mapToItem(previewColumnContainer, 0, 0).y
+                      var cH = child.height
+                      if (containerY >= cY && containerY <= cY + cH) {
+                        var itmData = (root.activeTab === "tasks") ? root.activeItems[i] : root.parsedItems[i]
+                        return {
+                          lineIndex: itmData ? itmData.lineIndex : -1,
+                          dropBefore: containerY < (cY + cH / 2)
+                        }
                       }
                     }
                   }
                 }
 
-                var lastIdx = count - 1
-                var lastData = root.parsedItems[lastIdx]
-                return {
-                  index: lastIdx,
-                  lineIndex: lastData ? lastData.lineIndex : -1,
-                  dropBefore: false
+                if (root.activeTab === "tasks" && root.completedItems && root.completedItems.length > 0 && completedRepeater) {
+                  var compCount = completedRepeater.count
+                  if (compCount > 0) {
+                    var firstComp = completedRepeater.itemAt(0)
+                    if (firstComp) {
+                      var fcY = firstComp.mapToItem(previewColumnContainer, 0, 0).y
+                      if (containerY < fcY) {
+                        return {
+                          lineIndex: root.completedItems[0].lineIndex,
+                          dropBefore: true
+                        }
+                      }
+                    }
+                  }
+
+                  for (var j = 0; j < compCount; j++) {
+                    var cChild = completedRepeater.itemAt(j)
+                    if (cChild) {
+                      var ccY = cChild.mapToItem(previewColumnContainer, 0, 0).y
+                      var ccH = cChild.height
+                      if (containerY >= ccY && containerY <= ccY + ccH) {
+                        var cData = root.completedItems[j]
+                        return {
+                          lineIndex: cData ? cData.lineIndex : -1,
+                          dropBefore: containerY < (ccY + ccH / 2)
+                        }
+                      }
+                    }
+                  }
+
+                  if (compCount > 0) {
+                    var lastComp = root.completedItems[compCount - 1]
+                    return {
+                      lineIndex: lastComp ? lastComp.lineIndex : -1,
+                      dropBefore: false
+                    }
+                  }
                 }
+
+                if (activeCount > 0) {
+                  var lastActiveData = (root.activeTab === "tasks") ? root.activeItems[activeCount - 1] : root.parsedItems[activeCount - 1]
+                  return {
+                    lineIndex: lastActiveData ? lastActiveData.lineIndex : -1,
+                    dropBefore: false
+                  }
+                }
+
+                return null
               }
 
               Column {
@@ -1914,17 +1992,100 @@ BarWidget {
                 width: parent.width
                 spacing: Style.space(6)
 
+                // 1. Active tasks / notes
                 Repeater {
-                  id: previewRepeater
-                  model: root.parsedItems
+                  id: activeRepeater
+                  model: (root.activeTab === "tasks") ? root.activeItems : root.parsedItems
+                  delegate: previewDelegateComponent
+                }
 
-                  delegate: Item {
+                // 2. "+ Add task" row placed strictly AFTER active tasks and BEFORE Completed
+                Item {
+                  id: addTaskRow
+                  width: parent.width
+                  height: Style.space(26)
+                  implicitHeight: visible ? Style.space(26) : 0
+                  visible: root.viewMode === "preview" && root.activeTab === "tasks"
+
+                  RowLayout {
+                    anchors.fill: parent
+                    spacing: Style.space(6)
+
+                    Item {
+                      width: Style.space(12)
+                      height: 1
+                    }
+
+                    Item {
+                      Layout.alignment: Qt.AlignVCenter
+                      width: Style.space(16)
+                      height: Style.space(16)
+
+                      Text {
+                        anchors.centerIn: parent
+                        text: "+"
+                        font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                        font.pixelSize: Style.font.body
+                        font.bold: true
+                        color: addTaskMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
+                      }
+                    }
+
+                    Text {
+                      Layout.alignment: Qt.AlignVCenter
+                      text: "Add task"
+                      font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                      font.pixelSize: Style.font.body
+                      color: addTaskMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
+                    }
+
+                    Item { Layout.fillWidth: true }
+                  }
+
+                  MouseArea {
+                    id: addTaskMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      if (root.editingLineIndex >= 0) {
+                        root.commitCurrentEditingTask(false)
+                      }
+                      root.addNewTaskAtEnd()
+                    }
+                  }
+                }
+
+                // 3. Completed Section (Header + completed tasks)
+                Column {
+                  id: completedSectionColumn
+                  width: parent.width
+                  spacing: Style.space(6)
+                  visible: root.activeTab === "tasks" && root.completedItems.length > 0
+
+                  Item {
+                    width: parent.width
+                    height: Style.space(8)
+                    implicitHeight: Style.space(8)
+                  }
+
+                  Repeater {
+                    id: completedRepeater
+                    model: root.completedItems
+                    delegate: previewDelegateComponent
+                  }
+                }
+
+                Component {
+                  id: previewDelegateComponent
+
+                  Item {
                     id: delegateItem
                     required property int index
                     required property var modelData
                     width: previewColumn.width
                     implicitHeight: loader.implicitHeight
-                    opacity: root.dragActive && root.draggedItemIndex === index ? 0.25 : 1.0
+                    opacity: root.dragActive && root.draggedLineIndex === modelData.lineIndex ? 0.25 : 1.0
                     Behavior on opacity { NumberAnimation { duration: 150 } }
 
                     // Drop indicator line (Top)
@@ -1936,7 +2097,7 @@ BarWidget {
                       height: 2
                       radius: 1
                       color: Commons.Color.accent
-                      visible: root.dragActive && root.dropTargetIndex === index && root.dropBefore && root.draggedItemIndex !== index
+                      visible: root.dragActive && root.dropTargetLineIndex === modelData.lineIndex && root.dropBefore && root.draggedLineIndex !== modelData.lineIndex
                       z: 100
 
                       Rectangle {
@@ -1958,7 +2119,7 @@ BarWidget {
                       height: 2
                       radius: 1
                       color: Commons.Color.accent
-                      visible: root.dragActive && root.dropTargetIndex === index && !root.dropBefore && root.draggedItemIndex !== index
+                      visible: root.dragActive && root.dropTargetLineIndex === modelData.lineIndex && !root.dropBefore && root.draggedLineIndex !== modelData.lineIndex
                       z: 100
 
                       Rectangle {
@@ -2435,132 +2596,60 @@ BarWidget {
                       Item {
                         id: headerDelegateRoot
                         width: previewColumn.width
-                        implicitHeight: headerColumnLayout.implicitHeight
+                        implicitHeight: headerTextContainer.implicitHeight
 
-                        readonly property bool isCompletedSection: root.activeTab === "tasks" && (modelData.content.trim().toLowerCase() === "completed" || modelData.lineIndex === root.completedHeaderLineIndex)
-
-                        Column {
-                          id: headerColumnLayout
+                        Item {
+                          id: headerTextContainer
                           width: parent.width
-                          spacing: Style.space(6)
+                          implicitHeight: headerEdit.paintedHeight + Style.space(6)
 
-                          // "+ Add task" button row placed right BEFORE the Completed section
-                          Item {
-                            id: inlineAddTaskItem
-                            visible: headerDelegateRoot.isCompletedSection && root.viewMode === "preview"
-                            width: parent.width
-                            height: visible ? Style.space(26) : 0
+                          TextEdit {
+                            id: headerEdit
+                            anchors.fill: parent
+                            anchors.topMargin: Style.space(4)
+                            anchors.bottomMargin: Style.space(2)
+                            text: modelData.content
+                            font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                            font.pixelSize: modelData.level === 1 ? Style.font.title + Style.space(2) : (modelData.level === 2 ? Style.font.title : Style.font.body + Style.space(2))
+                            font.bold: true
+                            color: modelData.level === 1 ? Commons.Color.accent : Commons.Color.foreground
+                            wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
+                            textFormat: TextEdit.PlainText
+                            readOnly: true
+                            selectByMouse: false
+                            activeFocusOnTab: false
+                            cursorVisible: false
+                          }
 
-                            RowLayout {
-                              anchors.fill: parent
-                              spacing: Style.space(6)
+                          Rectangle {
+                            id: headerCursor
+                            visible: root.viewMode === "preview" && root.pendingLineIndex === modelData.lineIndex && root.pendingCharOffset >= 0
+                            property var curRect: headerEdit.positionToRectangle(Math.min(headerEdit.text.length, Math.max(0, root.pendingCharOffset)))
+                            x: curRect ? curRect.x : 0
+                            y: curRect ? (curRect.y + Style.space(4)) : Style.space(4)
+                            width: 2
+                            height: curRect ? Math.max(Style.space(16), curRect.height) : Style.space(16)
+                            color: Commons.Color.accent
 
-                              Item {
-                                width: Style.space(12)
-                                height: 1
-                              }
-
-                              Item {
-                                Layout.alignment: Qt.AlignVCenter
-                                width: Style.space(16)
-                                height: Style.space(16)
-
-                                Text {
-                                  anchors.centerIn: parent
-                                  text: "+"
-                                  font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                                  font.pixelSize: Style.font.body
-                                  font.bold: true
-                                  color: inlineAddMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
-                                }
-                              }
-
-                              Text {
-                                Layout.alignment: Qt.AlignVCenter
-                                text: "Add task"
-                                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                                font.pixelSize: Style.font.body
-                                color: inlineAddMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
-                              }
-
-                              Item { Layout.fillWidth: true }
-                            }
-
-                            MouseArea {
-                              id: inlineAddMouse
-                              anchors.fill: parent
-                              hoverEnabled: true
-                              cursorShape: Qt.PointingHandCursor
-                              onClicked: {
-                                if (root.editingLineIndex >= 0) {
-                                  root.commitCurrentEditingTask(false)
-                                }
-                                root.addNewTaskAtEnd()
-                              }
+                            SequentialAnimation on opacity {
+                              loops: Animation.Infinite
+                              running: headerCursor.visible
+                              PropertyAnimation { to: 0.1; duration: 500 }
+                              PropertyAnimation { to: 1.0; duration: 500 }
                             }
                           }
 
-                          // Section separation spacing before Completed
-                          Item {
-                            visible: headerDelegateRoot.isCompletedSection
-                            width: parent.width
-                            height: Style.space(8)
-                          }
-
-                          // Header Text Container
-                          Item {
-                            id: headerTextContainer
-                            width: parent.width
-                            implicitHeight: headerEdit.paintedHeight + Style.space(6)
-
-                            TextEdit {
-                              id: headerEdit
-                              anchors.fill: parent
-                              anchors.topMargin: Style.space(4)
-                              anchors.bottomMargin: Style.space(2)
-                              text: modelData.content
-                              font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                              font.pixelSize: modelData.level === 1 ? Style.font.title + Style.space(2) : (modelData.level === 2 ? Style.font.title : Style.font.body + Style.space(2))
-                              font.bold: true
-                              color: modelData.level === 1 ? Commons.Color.accent : Commons.Color.foreground
-                              wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                              textFormat: TextEdit.PlainText
-                              readOnly: true
-                              selectByMouse: false
-                              activeFocusOnTab: false
-                              cursorVisible: false
-                            }
-
-                            Rectangle {
-                              id: headerCursor
-                              visible: root.viewMode === "preview" && root.pendingLineIndex === modelData.lineIndex && root.pendingCharOffset >= 0
-                              property var curRect: headerEdit.positionToRectangle(Math.min(headerEdit.text.length, Math.max(0, root.pendingCharOffset)))
-                              x: curRect ? curRect.x : 0
-                              y: curRect ? (curRect.y + Style.space(4)) : Style.space(4)
-                              width: 2
-                              height: curRect ? Math.max(Style.space(16), curRect.height) : Style.space(16)
-                              color: Commons.Color.accent
-
-                              SequentialAnimation on opacity {
-                                loops: Animation.Infinite
-                                running: headerCursor.visible
-                                PropertyAnimation { to: 0.1; duration: 500 }
-                                PropertyAnimation { to: 1.0; duration: 500 }
+                          MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.IBeamCursor
+                            onClicked: function(mouse) {
+                              if (root.editingLineIndex >= 0) {
+                                root.commitCurrentEditingTask(false)
                               }
+                              var pos = headerEdit.positionAt(mouse.x, mouse.y)
+                              root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
                             }
-
-                            MouseArea {
-                              anchors.fill: parent
-                              cursorShape: Qt.IBeamCursor
-                              onClicked: function(mouse) {
-                                if (root.editingLineIndex >= 0) {
-                                  root.commitCurrentEditingTask(false)
-                                }
-                                var pos = headerEdit.positionAt(mouse.x, mouse.y)
-                                root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
-                              }
-                              onDoubleClicked: root.toggleViewMode(true)
-                            }
+                            onDoubleClicked: root.toggleViewMode(true)
                           }
                         }
                       }
@@ -2893,70 +2982,10 @@ BarWidget {
                 }
               }
 
-              // "+ Add task" button row (Todoist style) - fallback when NO completed section exists
-              Item {
-                anchors.top: previewColumn.bottom
-                anchors.topMargin: Style.space(8)
-                anchors.left: parent.left
-                width: parent.width
-                height: Style.space(26)
-                visible: root.viewMode === "preview" && root.activeTab === "tasks" && root.completedHeaderLineIndex < 0
-
-                RowLayout {
-                  anchors.fill: parent
-                  spacing: Style.space(6)
-
-                  // Spacer matching dragHandle (width 12)
-                  Item {
-                    width: Style.space(12)
-                    height: 1
-                  }
-
-                  // 16x16 container matching Checkbox column with centered "+"
-                  Item {
-                    Layout.alignment: Qt.AlignVCenter
-                    width: Style.space(16)
-                    height: Style.space(16)
-
-                    Text {
-                      anchors.centerIn: parent
-                      text: "+"
-                      font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                      font.pixelSize: Style.font.body
-                      font.bold: true
-                      color: addMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
-                    }
-                  }
-
-                  Text {
-                    Layout.alignment: Qt.AlignVCenter
-                    text: "Add task"
-                    font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                    font.pixelSize: Style.font.body
-                    color: addMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
-                  }
-
-                  Item { Layout.fillWidth: true }
-                }
-
-                MouseArea {
-                  id: addMouse
-                  anchors.fill: parent
-                  hoverEnabled: true
-                  cursorShape: Qt.PointingHandCursor
-                  onClicked: {
-                    if (root.editingLineIndex >= 0) {
-                      root.commitCurrentEditingTask(false)
-                    }
-                    root.addNewTaskAtEnd()
-                  }
-                }
-              }
-
               // MouseArea covering the blank space below all items to add or start typing
               MouseArea {
                 anchors.top: previewColumn.bottom
-                anchors.topMargin: Style.space(38)
+                anchors.topMargin: Style.space(8)
                 anchors.left: parent.left
                 anchors.right: parent.right
                 anchors.bottom: parent.bottom
@@ -2972,7 +3001,6 @@ BarWidget {
                   } else {
                     root.setPendingCursorAfterLast()
                   }
-                }
                 }
                 onDoubleClicked: root.toggleViewMode(true)
               }
