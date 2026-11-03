@@ -414,7 +414,7 @@ BarWidget {
     }
 
     if (targetIdx < 0 || targetIdx >= lines.length) return false
-    if (targetIdx === 0 && lines[0].startsWith("#")) return false
+    if (targetIdx >= 0 && targetIdx < lines.length && lines[targetIdx].trim().startsWith("#")) return false
 
     var temp = lines[fromLineIdx]
     lines[fromLineIdx] = lines[targetIdx]
@@ -1924,6 +1924,7 @@ BarWidget {
                     if (containerY <= fY + firstActive.height / 2) {
                       var firstData = (root.activeTab === "tasks") ? root.activeItems[0] : root.parsedItems[0]
                       return {
+                        index: 0,
                         lineIndex: firstData ? firstData.lineIndex : 0,
                         dropBefore: true
                       }
@@ -1935,9 +1936,12 @@ BarWidget {
                     if (child) {
                       var cY = child.mapToItem(previewColumnContainer, 0, 0).y
                       var cH = child.height
-                      if (containerY >= cY && containerY <= cY + cH) {
+                      var nextChild = (i + 1 < activeCount) ? activeRepeater.itemAt(i + 1) : null
+                      var bottomBound = nextChild ? nextChild.mapToItem(previewColumnContainer, 0, 0).y : (cY + cH + Style.space(12))
+                      if (containerY >= cY && containerY < bottomBound) {
                         var itmData = (root.activeTab === "tasks") ? root.activeItems[i] : root.parsedItems[i]
                         return {
+                          index: i,
                           lineIndex: itmData ? itmData.lineIndex : -1,
                           dropBefore: containerY < (cY + cH / 2)
                         }
@@ -1954,6 +1958,7 @@ BarWidget {
                       var fcY = firstComp.mapToItem(previewColumnContainer, 0, 0).y
                       if (containerY < fcY) {
                         return {
+                          index: 0,
                           lineIndex: root.completedItems[0].lineIndex,
                           dropBefore: true
                         }
@@ -1966,9 +1971,12 @@ BarWidget {
                     if (cChild) {
                       var ccY = cChild.mapToItem(previewColumnContainer, 0, 0).y
                       var ccH = cChild.height
-                      if (containerY >= ccY && containerY <= ccY + ccH) {
+                      var nextCChild = (j + 1 < compCount) ? completedRepeater.itemAt(j + 1) : null
+                      var cBottomBound = nextCChild ? nextCChild.mapToItem(previewColumnContainer, 0, 0).y : (ccY + ccH + Style.space(12))
+                      if (containerY >= ccY && containerY < cBottomBound) {
                         var cData = root.completedItems[j]
                         return {
+                          index: j,
                           lineIndex: cData ? cData.lineIndex : -1,
                           dropBefore: containerY < (ccY + ccH / 2)
                         }
@@ -1979,6 +1987,7 @@ BarWidget {
                   if (compCount > 0) {
                     var lastComp = root.completedItems[compCount - 1]
                     return {
+                      index: compCount - 1,
                       lineIndex: lastComp ? lastComp.lineIndex : -1,
                       dropBefore: false
                     }
@@ -1988,6 +1997,7 @@ BarWidget {
                 if (activeCount > 0) {
                   var lastActiveData = (root.activeTab === "tasks") ? root.activeItems[activeCount - 1] : root.parsedItems[activeCount - 1]
                   return {
+                    index: activeCount - 1,
                     lineIndex: lastActiveData ? lastActiveData.lineIndex : -1,
                     dropBefore: false
                   }
@@ -2233,7 +2243,7 @@ BarWidget {
                               root.dropTargetLineIndex = modelData.lineIndex
                               root.dropBefore = true
 
-                              var ptInCard = dragHandle.mapToItem(cardContent, mouse.x, mouse.y)
+                              var ptInCard = dragMouseArea.mapToItem(cardContent, mouse.x, mouse.y)
                               root.dragGhostY = ptInCard.y - Style.space(17)
                             }
 
@@ -2250,11 +2260,11 @@ BarWidget {
                                 }
                               }
 
-                              var ptInCard = dragHandle.mapToItem(cardContent, mouse.x, mouse.y)
+                              var ptInCard = dragMouseArea.mapToItem(cardContent, mouse.x, mouse.y)
                               root.dragGhostY = ptInCard.y - Style.space(17)
 
                               // Auto-scroll Flickable
-                              var ptInFlickable = dragHandle.mapToItem(previewFlickable, mouse.x, mouse.y)
+                              var ptInFlickable = dragMouseArea.mapToItem(previewFlickable, mouse.x, mouse.y)
                               var scrollZone = Style.space(40)
                               if (ptInFlickable.y < scrollZone) {
                                 previewFlickable.contentY = Math.max(0, previewFlickable.contentY - Style.space(12))
@@ -2264,12 +2274,16 @@ BarWidget {
                               }
 
                               // Calculate drop slot
-                              var ptInContainer = dragHandle.mapToItem(previewColumnContainer, mouse.x, mouse.y)
+                              var ptInContainer = dragMouseArea.mapToItem(previewColumnContainer, mouse.x, mouse.y)
                               var targetInfo = previewColumnContainer.findDropTarget(ptInContainer.y)
                               if (targetInfo) {
-                                root.dropTargetIndex = targetInfo.index
-                                root.dropTargetLineIndex = targetInfo.lineIndex
-                                root.dropBefore = targetInfo.dropBefore
+                                if (targetInfo.index !== undefined && targetInfo.index !== null) {
+                                  root.dropTargetIndex = targetInfo.index
+                                }
+                                if (targetInfo.lineIndex !== undefined && targetInfo.lineIndex !== null) {
+                                  root.dropTargetLineIndex = targetInfo.lineIndex
+                                }
+                                root.dropBefore = !!targetInfo.dropBefore
                               }
                             }
 
@@ -2460,6 +2474,27 @@ BarWidget {
                                   insert(p, ins)
                                   cursorPosition = p + ins.length
                                   root.activeEditingText = text
+                                  return
+                                }
+                                if ((event.modifiers & Qt.AltModifier) && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
+                                  event.accepted = true
+                                  var dir = (event.key === Qt.Key_Up) ? -1 : 1
+                                  var curLine = modelData.lineIndex
+                                  var oldPos = cursorPosition
+                                  root.activeEditingText = inlineInput.text
+                                  root.commitCurrentEditingTask(false)
+                                  var lines = tasksText.split("\n")
+                                  var targetIdx = curLine + dir
+                                  while (targetIdx >= 0 && targetIdx < lines.length && lines[targetIdx].trim() === "") {
+                                    targetIdx += dir
+                                  }
+                                  if (targetIdx >= 0 && targetIdx < lines.length && !lines[targetIdx].trim().startsWith("#")) {
+                                    if (root.moveTaskLine(curLine, dir)) {
+                                      root.pendingCharOffset = oldPos
+                                      root.editingLineIndex = targetIdx
+                                      root.requestTaskFocus(targetIdx)
+                                    }
+                                  }
                                   return
                                 }
                               }
