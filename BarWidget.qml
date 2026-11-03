@@ -710,6 +710,9 @@ BarWidget {
     if (panel.loadedContent && panel.loadedContent.editor && panel.loadedContent.editor.activeFocus) {
       return
     }
+    if (root.editingLineIndex >= 0) {
+      return
+    }
     currentText = txt
     updateCounts(txt)
     refreshParsedItems()
@@ -1170,7 +1173,9 @@ BarWidget {
     running: true
     triggeredOnStart: true
     onTriggered: {
-      tasksFile.reload()
+      if (!root.opened && root.editingLineIndex < 0) {
+        tasksFile.reload()
+      }
       root.checkTaskReminders()
     }
   }
@@ -1333,15 +1338,11 @@ BarWidget {
 
         Keys.onPressed: function(event) {
           if (root.editingLineIndex >= 0) {
-            // Task inline editing is active; let the focused editor handle input directly
+            // Task inline editing is active; allow focused editor to handle input directly
             if (event.key === Qt.Key_Escape) {
               event.accepted = true
               root.commitTaskEdit(root.editingLineIndex, "", false)
-              return
             }
-            // If cardContent receives a key event while editing is active,
-            // immediately redirect focus to the active inline editor:
-            root.requestTaskFocus(root.editingLineIndex)
             return
           }
           if (root.viewMode === "preview") {
@@ -2051,18 +2052,22 @@ BarWidget {
                                 if (taskRowLayout.isEditingThisTask) {
                                   Qt.callLater(function() {
                                     inlineInput.forceActiveFocus()
-                                    var pos = (root.pendingCharOffset >= 0) ? root.pendingCharOffset : inlineInput.text.length
-                                    inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, pos))
+                                    if (root.pendingCharOffset >= 0) {
+                                      inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
+                                      root.pendingCharOffset = -1
+                                    }
                                   })
                                 }
                               }
 
                               onVisibleChanged: {
-                                if (visible) {
+                                if (visible && taskRowLayout.isEditingThisTask) {
                                   Qt.callLater(function() {
                                     inlineInput.forceActiveFocus()
-                                    var pos = (root.pendingCharOffset >= 0) ? root.pendingCharOffset : inlineInput.text.length
-                                    inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, pos))
+                                    if (root.pendingCharOffset >= 0) {
+                                      inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
+                                      root.pendingCharOffset = -1
+                                    }
                                   })
                                 }
                               }
@@ -2145,8 +2150,10 @@ BarWidget {
                             function onRequestTaskFocus(targetLine) {
                               if (modelData.lineIndex === targetLine) {
                                 inlineInput.forceActiveFocus()
-                                var pos = (root.pendingCharOffset >= 0) ? root.pendingCharOffset : inlineInput.text.length
-                                inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, pos))
+                                if (root.pendingCharOffset >= 0) {
+                                  inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
+                                  root.pendingCharOffset = -1
+                                }
                               }
                             }
                             function onEditingLineIndexChanged() {
@@ -2154,8 +2161,10 @@ BarWidget {
                                 Qt.callLater(function() {
                                   if (inlineInput) {
                                     inlineInput.forceActiveFocus()
-                                    var pos = (root.pendingCharOffset >= 0) ? root.pendingCharOffset : inlineInput.text.length
-                                    inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, pos))
+                                    if (root.pendingCharOffset >= 0) {
+                                      inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
+                                      root.pendingCharOffset = -1
+                                    }
                                   }
                                 })
                               }
