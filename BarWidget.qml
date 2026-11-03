@@ -40,7 +40,67 @@ BarWidget {
   property int dropTargetLineIndex: -1
   property bool dropBefore: true
   property int editingLineIndex: -1
+  property string activeEditingText: ""
+  property int completedHeaderLineIndex: -1
   signal requestTaskFocus(int lineIndex)
+
+  Timer {
+    id: autoSaveTaskTimer
+    interval: 500
+    repeat: false
+    onTriggered: {
+      if (root.editingLineIndex >= 0 && root.activeEditingText !== undefined) {
+        var lines = root.tasksText.split("\n")
+        if (root.editingLineIndex >= 0 && root.editingLineIndex < lines.length) {
+          var oldLine = lines[root.editingLineIndex]
+          var m = oldLine.match(/^(\s*[-*]\s*\[[ xX]\]\s*)(.*)$/)
+          var prefix = m ? m[1] : "- [ ] "
+          var sanitized = root.sanitizeTaskContent(root.activeEditingText)
+          if (sanitized.length > 0) {
+            lines[root.editingLineIndex] = prefix + sanitized
+            var newT = lines.join("\n")
+            root.tasksText = newT
+            root.currentText = newT
+            root.saveNow()
+          }
+        }
+      }
+    }
+  }
+
+  function sanitizeTaskContent(content) {
+    var str = (content || "").trim()
+    if (str.length === 0) {
+      return ""
+    }
+
+    // Bracketed timestamp: e.g. [26-11-03 12:05] or [2026-11-03 12:05]
+    var bracketedTs = /\[(?:20)?(\d{2})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})\]/
+    // Unbracketed timestamp: e.g. 26-11-03 12:05 or 2026-11-03 12:05
+    var unbracketedTs = /(?:20)?(\d{2})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})/
+
+    var m = str.match(bracketedTs)
+    if (m) {
+      var withoutTs = str.replace(m[0], "").trim()
+      // If task ONLY has date and time:
+      if (withoutTs.length === 0) {
+        return "New task " + m[0]
+      }
+      return withoutTs + " " + m[0]
+    }
+
+    var um = str.match(unbracketedTs)
+    if (um) {
+      var withoutUm = str.replace(um[0], "").trim()
+      var normalizedTs = "[" + um[1] + "-" + pad2(parseInt(um[2], 10)) + "-" + pad2(parseInt(um[3], 10)) + " " + pad2(parseInt(um[4], 10)) + ":" + um[5] + "]"
+      if (withoutUm.length === 0) {
+        return "New task " + normalizedTs
+      }
+      return withoutUm + " " + normalizedTs
+    }
+
+    return str
+  }
 
   readonly property int pendingTaskCount: {
     var count = 0
@@ -84,6 +144,9 @@ BarWidget {
 
   function sweepCompletedTasks() {
     if (activeTab !== "tasks") return
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     var lines = tasksText.split("\n")
     var newLines = []
     var inCompletedHeader = false
@@ -176,30 +239,57 @@ BarWidget {
     root.applyTaskDrop(fromLineIdx, targetLineIdx, dropBefore)
   }
 
-  function commitTaskEdit(lineIdx, newContent, createNext) {
+  function commitCurrentEditingTask(createNext) {
+    autoSaveTaskTimer.stop()
+    if (root.editingLineIndex < 0) return
+    var lineIdx = root.editingLineIndex
     var lines = tasksText.split("\n")
-    if (lineIdx < 0 || lineIdx >= lines.length) return
-    var oldLine = lines[lineIdx]
-
-    var m = oldLine.match(/^(\s*[-*]\s*\[[ xX]\]\s*)(.*)$/)
-    var prefix = m ? m[1] : "- [ ] "
-    var cleanTrimmed = (newContent || "").trim()
-
-    if (cleanTrimmed.length === 0) {
-      cleanTrimmed = "New task"
+    if (lineIdx < 0 || lineIdx >= lines.length) {
+      root.editingLineIndex = -1
+      root.activeEditingText = ""
+      return
     }
 
+    var oldLine = lines[lineIdx]
+    var m = oldLine.match(/^(\s*[-*]\s*\[[ xX]\]\s*)(.*)$/)
+    var prefix = m ? m[1] : "- [ ] "
+
+    var rawContent = (root.activeEditingText !== undefined && root.activeEditingText !== null) ? root.activeEditingText : (m ? m[2] : "")
+    var sanitized = sanitizeTaskContent(rawContent)
+
+    if (sanitized.length === 0) {
+      if (createNext) {
+        sanitized = "New task"
+      } else {
+        // User clicked away or escaped from a blank task -> remove it cleanly
+        lines.splice(lineIdx, 1)
+        root.editingLineIndex = -1
+        root.activeEditingText = ""
+        var newT = lines.join("\n")
+        tasksText = newT
+        currentText = newT
+        if (panel.loadedContent && panel.loadedContent.editor) {
+          panel.loadedContent.editor.text = newT
+        }
+        refreshParsedItems()
+        saveNow()
+        return
+      }
+    }
+
+    lines[lineIdx] = prefix + sanitized
+
     if (createNext) {
-      lines[lineIdx] = prefix + cleanTrimmed
       lines.splice(lineIdx + 1, 0, "- [ ] ")
       root.editingLineIndex = lineIdx + 1
+      root.activeEditingText = ""
       root.pendingCharOffset = 0
       Qt.callLater(function() {
         root.requestTaskFocus(lineIdx + 1)
       })
     } else {
-      lines[lineIdx] = prefix + cleanTrimmed
       root.editingLineIndex = -1
+      root.activeEditingText = ""
     }
 
     var newText = lines.join("\n")
@@ -210,6 +300,16 @@ BarWidget {
     }
     refreshParsedItems()
     saveNow()
+  }
+
+  function commitTaskEdit(lineIdx, newContent, createNext) {
+    if (newContent !== undefined && newContent !== null && newContent !== "") {
+      root.activeEditingText = newContent
+    }
+    if (lineIdx >= 0) {
+      root.editingLineIndex = lineIdx
+    }
+    commitCurrentEditingTask(createNext)
   }
 
   function deleteTaskAtLine(lineIdx) {
@@ -244,6 +344,9 @@ BarWidget {
   }
 
   function addNewTaskAtEnd(initialText) {
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     var initStr = (typeof initialText === "string") ? initialText : ""
     var lines = tasksText.split("\n")
     var compIdx = -1
@@ -272,6 +375,7 @@ BarWidget {
         saveNow()
       }
       root.editingLineIndex = insertIdx - 1
+      root.activeEditingText = initStr
       root.pendingCharOffset = initStr.length
       Qt.callLater(function() {
         root.requestTaskFocus(insertIdx - 1)
@@ -281,6 +385,7 @@ BarWidget {
 
     lines.splice(insertIdx, 0, "- [ ] " + initStr)
     root.editingLineIndex = insertIdx
+    root.activeEditingText = initStr
     root.pendingCharOffset = initStr.length
 
     var newText = lines.join("\n")
@@ -518,7 +623,7 @@ BarWidget {
     var changed = false
     for (var i = lines.length - 1; i >= 0; i--) {
       if (lines[i].match(/^\s*[-*]\s*\[ \]\s*$/)) {
-        lines[i] = "- [ ] New task"
+        lines.splice(i, 1)
         changed = true
       }
     }
@@ -534,6 +639,9 @@ BarWidget {
   }
 
   function close() {
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     autoPreviewTimer.stop()
     cleanEmptyTaskLines()
     saveNow()
@@ -544,6 +652,7 @@ BarWidget {
     root.dropTargetIndex = -1
     root.dropTargetLineIndex = -1
     root.editingLineIndex = -1
+    root.activeEditingText = ""
     // Persist active tab and view modes
     Quickshell.execDetached(["sh", "-c", "echo -n '" + root.activeTab + "' > '" + storageDir + "/active_tab.txt'"])
     persistViewMode("tasks", tasksViewMode)
@@ -557,6 +666,9 @@ BarWidget {
 
   function switchTab(tab) {
     if (activeTab === tab) return
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     autoPreviewTimer.stop()
     cleanEmptyTaskLines()
     clearPendingCursor()
@@ -594,6 +706,9 @@ BarWidget {
   }
 
   function toggleViewMode(willing) {
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     autoPreviewTimer.stop()
     clearPendingCursor()
 
@@ -764,6 +879,9 @@ BarWidget {
   }
 
   function copyAll() {
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     saveNow()
     Quickshell.execDetached(["wl-copy", currentText])
     Quickshell.execDetached(["omarchy-notification-send", strings.t("scratchpad.title"), strings.t("scratchpad.copied")])
@@ -771,6 +889,8 @@ BarWidget {
   }
 
   function clearNote() {
+    root.editingLineIndex = -1
+    root.activeEditingText = ""
     clearPendingCursor()
     currentText = ""
     if (activeTab === "tasks") {
@@ -787,6 +907,9 @@ BarWidget {
   }
 
   function openInEditor() {
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     saveNow()
     close()
     Quickshell.execDetached(["omarchy-launch-editor", root.currentFilePath])
@@ -895,9 +1018,15 @@ BarWidget {
     var inCodeBlock = false
     var codeLines = []
     var codeStartIdx = -1
+    var compHeaderLine = -1
 
     for (var i = 0; i < lines.length; i++) {
       var raw = lines[i]
+
+      // Identify Completed header line index for UI section separation
+      if (root.activeTab === "tasks" && compHeaderLine === -1 && raw.trim().match(/^#{1,6}\s+Completed$/i)) {
+        compHeaderLine = i
+      }
 
       // Code blocks
       if (raw.trim().startsWith("```")) {
@@ -929,9 +1058,12 @@ BarWidget {
       if (taskMatch) {
         var indentSpaces = taskMatch[1].match(/^\s*/)[0].length
         var content = taskMatch[3]
-        var tsMatch = content.match(/\[(?:20)?(\d{2})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})\]/)
+        var tsMatch = content.match(/\[(?:20)?(\d{2})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})\]/)
         var dueDate = tsMatch ? tsMatch[0] : ""
         var cleanContent = tsMatch ? content.replace(tsMatch[0], "").trim() : content
+        if (cleanContent.length === 0) {
+          cleanContent = dueDate.length > 0 ? "New task" : (content.trim().length > 0 ? content.trim() : "New task")
+        }
         res.push({
           lineIndex: i,
           itemType: "task",
@@ -1021,11 +1153,15 @@ BarWidget {
       })
     }
 
+    completedHeaderLineIndex = compHeaderLine
     parsedItems = res
   }
 
   // Interactive checkbox toggle in preview mode with auto-move
   function toggleTaskAtLine(lineIdx) {
+    if (root.editingLineIndex >= 0) {
+      root.commitCurrentEditingTask(false)
+    }
     clearPendingCursor()
     var lines = currentText.split("\n")
     if (lineIdx < 0 || lineIdx >= lines.length) return
@@ -1241,6 +1377,9 @@ BarWidget {
 
   onOpenedChanged: {
     if (!opened) {
+      if (root.editingLineIndex >= 0) {
+        root.commitCurrentEditingTask(false)
+      }
       root.saveNow()
     }
   }
@@ -1341,7 +1480,7 @@ BarWidget {
             // Task inline editing is active; allow focused editor to handle input directly
             if (event.key === Qt.Key_Escape) {
               event.accepted = true
-              root.commitTaskEdit(root.editingLineIndex, "", false)
+              root.commitCurrentEditingTask(false)
             }
             return
           }
@@ -1575,6 +1714,15 @@ BarWidget {
               policy: editFlickable.contentHeight > editFlickable.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
             }
 
+            TapHandler {
+              onTapped: {
+                if (root.editingLineIndex >= 0) {
+                  root.commitCurrentEditingTask(false)
+                  if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
+                }
+              }
+            }
+
             WheelHandler {
               target: null
               acceptedDevices: PointerDevice.Mouse | PointerDevice.TouchPad
@@ -1693,6 +1841,15 @@ BarWidget {
             ScrollBar.vertical: ScrollBar {
               id: previewScrollBar
               policy: previewFlickable.contentHeight > previewFlickable.height ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff
+            }
+
+            TapHandler {
+              onTapped: {
+                if (root.editingLineIndex >= 0) {
+                  root.commitCurrentEditingTask(false)
+                  if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
+                }
+              }
             }
 
             WheelHandler {
@@ -1838,6 +1995,7 @@ BarWidget {
                       RowLayout {
                         id: taskRowLayout
                         width: previewColumn.width
+                        implicitHeight: Math.max(Style.space(20), taskTextColumn.implicitHeight)
                         spacing: Style.space(6)
 
                         readonly property bool isEditingThisTask: root.editingLineIndex === modelData.lineIndex
@@ -1891,6 +2049,9 @@ BarWidget {
                             property bool isDragging: false
 
                             onPressed: function(mouse) {
+                              if (root.editingLineIndex >= 0) {
+                                root.commitCurrentEditingTask(false)
+                              }
                               startPressY = mouse.y
                               isDragging = false
                               root.draggedLineIndex = modelData.lineIndex
@@ -2006,13 +2167,20 @@ BarWidget {
                             anchors.fill: parent
                             hoverEnabled: true
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: root.toggleTaskAtLine(modelData.lineIndex)
+                            onClicked: {
+                              if (root.editingLineIndex >= 0) {
+                                root.commitCurrentEditingTask(false)
+                              }
+                              root.toggleTaskAtLine(modelData.lineIndex)
+                            }
                           }
                         }
 
                         // Task Text Column: Toggle between interactive display and inline editing
                         ColumnLayout {
+                          id: taskTextColumn
                           Layout.fillWidth: true
+                          Layout.preferredWidth: 0
                           Layout.alignment: Qt.AlignTop
                           Layout.topMargin: Style.space(2)
                           spacing: Style.space(2)
@@ -2020,6 +2188,7 @@ BarWidget {
                           Item {
                             id: editorItem
                             Layout.fillWidth: true
+                            Layout.preferredWidth: 0
                             implicitHeight: Math.max(Style.space(16), taskRowLayout.isEditingThisTask ? inlineInput.paintedHeight : staticText.paintedHeight)
 
                             // 1. Inline edit field (active when clicked or new task added)
@@ -2032,12 +2201,19 @@ BarWidget {
                               font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                               font.pixelSize: Style.font.body
                               color: Commons.Color.foreground
-                              wrapMode: TextEdit.Wrap
+                              wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
                               textFormat: TextEdit.PlainText
                               selectByMouse: true
                               selectionColor: Style.selectionFillFor(Commons.Color.foreground, Commons.Color.accent)
                               selectedTextColor: Commons.Color.foreground
                               cursorVisible: activeFocus
+
+                              onTextChanged: {
+                                if (taskRowLayout.isEditingThisTask) {
+                                  root.activeEditingText = text
+                                  autoSaveTaskTimer.restart()
+                                }
+                              }
 
                               Text {
                                 anchors.fill: parent
@@ -2045,16 +2221,20 @@ BarWidget {
                                 text: "New task..."
                                 color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.35)
                                 font: inlineInput.font
-                                wrapMode: Text.Wrap
+                                wrapMode: Text.WrapAtWordBoundaryOrAnywhere
                               }
 
                               Component.onCompleted: {
                                 if (taskRowLayout.isEditingThisTask) {
+                                  root.activeEditingText = inlineInput.text
+                                  var r = root
                                   Qt.callLater(function() {
-                                    inlineInput.forceActiveFocus()
-                                    if (root.pendingCharOffset >= 0) {
-                                      inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
-                                      root.pendingCharOffset = -1
+                                    if (inlineInput) {
+                                      inlineInput.forceActiveFocus()
+                                      if (r && r.pendingCharOffset >= 0) {
+                                        inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, r.pendingCharOffset))
+                                        r.pendingCharOffset = -1
+                                      }
                                     }
                                   })
                                 }
@@ -2062,11 +2242,15 @@ BarWidget {
 
                               onVisibleChanged: {
                                 if (visible && taskRowLayout.isEditingThisTask) {
+                                  root.activeEditingText = inlineInput.text
+                                  var r = root
                                   Qt.callLater(function() {
-                                    inlineInput.forceActiveFocus()
-                                    if (root.pendingCharOffset >= 0) {
-                                      inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
-                                      root.pendingCharOffset = -1
+                                    if (inlineInput) {
+                                      inlineInput.forceActiveFocus()
+                                      if (r && r.pendingCharOffset >= 0) {
+                                        inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, r.pendingCharOffset))
+                                        r.pendingCharOffset = -1
+                                      }
                                     }
                                   })
                                 }
@@ -2074,12 +2258,12 @@ BarWidget {
 
                               Keys.onReturnPressed: function(event) {
                                 event.accepted = true
-                                root.commitTaskEdit(modelData.lineIndex, inlineInput.text, true)
+                                root.commitCurrentEditingTask(true)
                               }
 
                               Keys.onEnterPressed: function(event) {
                                 event.accepted = true
-                                root.commitTaskEdit(modelData.lineIndex, inlineInput.text, true)
+                                root.commitCurrentEditingTask(true)
                               }
 
                               Keys.onEscapePressed: function(event) {
@@ -2087,7 +2271,7 @@ BarWidget {
                                 if (inlineInput.text.trim().length === 0) {
                                   root.deleteTaskAtLine(modelData.lineIndex)
                                 } else {
-                                  root.commitTaskEdit(modelData.lineIndex, inlineInput.text, false)
+                                  root.commitCurrentEditingTask(false)
                                 }
                               }
 
@@ -2105,13 +2289,14 @@ BarWidget {
                                   var ins = (needsSpace ? " " : "") + ts + " "
                                   insert(p, ins)
                                   cursorPosition = p + ins.length
+                                  root.activeEditingText = text
                                   return
                                 }
                               }
 
                               onActiveFocusChanged: {
-                                if (!activeFocus && taskRowLayout.isEditingThisTask) {
-                                  root.commitTaskEdit(modelData.lineIndex, inlineInput.text, false)
+                                if (!activeFocus && root.editingLineIndex === modelData.lineIndex) {
+                                  root.commitCurrentEditingTask(false)
                                 }
                               }
                             }
@@ -2121,23 +2306,28 @@ BarWidget {
                               id: staticText
                               anchors.fill: parent
                               visible: !taskRowLayout.isEditingThisTask
-                              text: (modelData.cleanContent !== undefined && modelData.cleanContent.length > 0) ? modelData.cleanContent : (modelData.content || "New task")
+                              text: (modelData.cleanContent !== undefined && modelData.cleanContent.length > 0) ? modelData.cleanContent : "New task"
                               font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                               font.pixelSize: Style.font.body
                               font.strikeout: modelData.checked
                               color: (modelData.content && modelData.content.length > 0)
                                 ? (modelData.checked ? Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45) : Commons.Color.foreground)
                                 : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.35)
-                              wrapMode: Text.Wrap
+                              wrapMode: Text.WrapAtWordBoundaryOrAnywhere
 
                               MouseArea {
                                 anchors.fill: parent
                                 cursorShape: Qt.IBeamCursor
                                 onClicked: function(mouse) {
+                                  if (root.editingLineIndex >= 0 && root.editingLineIndex !== modelData.lineIndex) {
+                                    root.commitCurrentEditingTask(false)
+                                  }
                                   root.pendingCharOffset = staticText.text.length
                                   root.editingLineIndex = modelData.lineIndex
+                                  root.activeEditingText = modelData.content || ""
+                                  var r = root
                                   Qt.callLater(function() {
-                                    root.requestTaskFocus(modelData.lineIndex)
+                                    if (r) r.requestTaskFocus(modelData.lineIndex)
                                   })
                                 }
                                 onDoubleClicked: root.toggleViewMode(true)
@@ -2149,21 +2339,24 @@ BarWidget {
                             target: root
                             function onRequestTaskFocus(targetLine) {
                               if (modelData.lineIndex === targetLine) {
-                                inlineInput.forceActiveFocus()
-                                if (root.pendingCharOffset >= 0) {
-                                  inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
-                                  root.pendingCharOffset = -1
+                                if (inlineInput) {
+                                  inlineInput.forceActiveFocus()
+                                  if (root.pendingCharOffset >= 0) {
+                                    inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
+                                    root.pendingCharOffset = -1
+                                  }
                                 }
                               }
                             }
                             function onEditingLineIndexChanged() {
                               if (root.editingLineIndex === modelData.lineIndex) {
+                                var r = root
                                 Qt.callLater(function() {
                                   if (inlineInput) {
                                     inlineInput.forceActiveFocus()
-                                    if (root.pendingCharOffset >= 0) {
+                                    if (r && r.pendingCharOffset >= 0) {
                                       inlineInput.cursorPosition = Math.min(inlineInput.text.length, Math.max(0, root.pendingCharOffset))
-                                      root.pendingCharOffset = -1
+                                      r.pendingCharOffset = -1
                                     }
                                   }
                                 })
@@ -2180,7 +2373,7 @@ BarWidget {
 
                             readonly property bool isOverdue: {
                               if (!modelData.dueDate) return false
-                              var m = modelData.dueDate.match(/\[(?:20)?(\d{2})-(\d{2})-(\d{2})\s+(\d{1,2}):(\d{2})\]/)
+                              var m = modelData.dueDate.match(/\[(?:20)?(\d{2})[-/](\d{1,2})[-/](\d{1,2})\s+(\d{1,2}):(\d{2})\]/)
                               if (!m) return false
                               var d = new Date(2000 + parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10), parseInt(m[4], 10), parseInt(m[5], 10))
                               return d.getTime() < Date.now()
@@ -2217,11 +2410,16 @@ BarWidget {
                               anchors.fill: parent
                               cursorShape: Qt.PointingHandCursor
                               onClicked: {
+                                if (root.editingLineIndex >= 0 && root.editingLineIndex !== modelData.lineIndex) {
+                                  root.commitCurrentEditingTask(false)
+                                }
                                 var tsPos = modelData.content.indexOf(modelData.dueDate)
                                 root.pendingCharOffset = (tsPos >= 0) ? (tsPos + 1) : 0
                                 root.editingLineIndex = modelData.lineIndex
+                                root.activeEditingText = modelData.content || ""
+                                var r = root
                                 Qt.callLater(function() {
-                                  root.requestTaskFocus(modelData.lineIndex)
+                                  if (r) r.requestTaskFocus(modelData.lineIndex)
                                 })
                               }
                             }
@@ -2235,53 +2433,135 @@ BarWidget {
                       id: headerPreviewDelegate
 
                       Item {
+                        id: headerDelegateRoot
                         width: previewColumn.width
-                        implicitHeight: headerEdit.paintedHeight + Style.space(6)
+                        implicitHeight: headerColumnLayout.implicitHeight
 
-                        TextEdit {
-                          id: headerEdit
-                          anchors.fill: parent
-                          anchors.topMargin: Style.space(4)
-                          anchors.bottomMargin: Style.space(2)
-                          text: modelData.content
-                          font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                          font.pixelSize: modelData.level === 1 ? Style.font.title + Style.space(2) : (modelData.level === 2 ? Style.font.title : Style.font.body + Style.space(2))
-                          font.bold: true
-                          color: modelData.level === 1 ? Commons.Color.accent : Commons.Color.foreground
-                          wrapMode: TextEdit.Wrap
-                          textFormat: TextEdit.PlainText
-                          readOnly: true
-                          selectByMouse: false
-                          activeFocusOnTab: false
-                          cursorVisible: false
-                        }
+                        readonly property bool isCompletedSection: root.activeTab === "tasks" && (modelData.content.trim().toLowerCase() === "completed" || modelData.lineIndex === root.completedHeaderLineIndex)
 
-                        Rectangle {
-                          id: headerCursor
-                          visible: root.viewMode === "preview" && root.pendingLineIndex === modelData.lineIndex && root.pendingCharOffset >= 0
-                          property var curRect: headerEdit.positionToRectangle(Math.min(headerEdit.text.length, Math.max(0, root.pendingCharOffset)))
-                          x: curRect ? curRect.x : 0
-                          y: curRect ? (curRect.y + Style.space(4)) : Style.space(4)
-                          width: 2
-                          height: curRect ? Math.max(Style.space(16), curRect.height) : Style.space(16)
-                          color: Commons.Color.accent
+                        Column {
+                          id: headerColumnLayout
+                          width: parent.width
+                          spacing: Style.space(6)
 
-                          SequentialAnimation on opacity {
-                            loops: Animation.Infinite
-                            running: headerCursor.visible
-                            PropertyAnimation { to: 0.1; duration: 500 }
-                            PropertyAnimation { to: 1.0; duration: 500 }
+                          // "+ Add task" button row placed right BEFORE the Completed section
+                          Item {
+                            id: inlineAddTaskItem
+                            visible: headerDelegateRoot.isCompletedSection && root.viewMode === "preview"
+                            width: parent.width
+                            height: visible ? Style.space(26) : 0
+
+                            RowLayout {
+                              anchors.fill: parent
+                              spacing: Style.space(6)
+
+                              Item {
+                                width: Style.space(12)
+                                height: 1
+                              }
+
+                              Item {
+                                Layout.alignment: Qt.AlignVCenter
+                                width: Style.space(16)
+                                height: Style.space(16)
+
+                                Text {
+                                  anchors.centerIn: parent
+                                  text: "+"
+                                  font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                                  font.pixelSize: Style.font.body
+                                  font.bold: true
+                                  color: inlineAddMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
+                                }
+                              }
+
+                              Text {
+                                Layout.alignment: Qt.AlignVCenter
+                                text: "Add task"
+                                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                                font.pixelSize: Style.font.body
+                                color: inlineAddMouse.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
+                              }
+
+                              Item { Layout.fillWidth: true }
+                            }
+
+                            MouseArea {
+                              id: inlineAddMouse
+                              anchors.fill: parent
+                              hoverEnabled: true
+                              cursorShape: Qt.PointingHandCursor
+                              onClicked: {
+                                if (root.editingLineIndex >= 0) {
+                                  root.commitCurrentEditingTask(false)
+                                }
+                                root.addNewTaskAtEnd()
+                              }
+                            }
                           }
-                        }
 
-                        MouseArea {
-                          anchors.fill: parent
-                          cursorShape: Qt.IBeamCursor
-                          onClicked: function(mouse) {
-                            var pos = headerEdit.positionAt(mouse.x, mouse.y)
-                            root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
+                          // Section separation spacing before Completed
+                          Item {
+                            visible: headerDelegateRoot.isCompletedSection
+                            width: parent.width
+                            height: Style.space(8)
                           }
-                          onDoubleClicked: root.toggleViewMode(true)
+
+                          // Header Text Container
+                          Item {
+                            id: headerTextContainer
+                            width: parent.width
+                            implicitHeight: headerEdit.paintedHeight + Style.space(6)
+
+                            TextEdit {
+                              id: headerEdit
+                              anchors.fill: parent
+                              anchors.topMargin: Style.space(4)
+                              anchors.bottomMargin: Style.space(2)
+                              text: modelData.content
+                              font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+                              font.pixelSize: modelData.level === 1 ? Style.font.title + Style.space(2) : (modelData.level === 2 ? Style.font.title : Style.font.body + Style.space(2))
+                              font.bold: true
+                              color: modelData.level === 1 ? Commons.Color.accent : Commons.Color.foreground
+                              wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
+                              textFormat: TextEdit.PlainText
+                              readOnly: true
+                              selectByMouse: false
+                              activeFocusOnTab: false
+                              cursorVisible: false
+                            }
+
+                            Rectangle {
+                              id: headerCursor
+                              visible: root.viewMode === "preview" && root.pendingLineIndex === modelData.lineIndex && root.pendingCharOffset >= 0
+                              property var curRect: headerEdit.positionToRectangle(Math.min(headerEdit.text.length, Math.max(0, root.pendingCharOffset)))
+                              x: curRect ? curRect.x : 0
+                              y: curRect ? (curRect.y + Style.space(4)) : Style.space(4)
+                              width: 2
+                              height: curRect ? Math.max(Style.space(16), curRect.height) : Style.space(16)
+                              color: Commons.Color.accent
+
+                              SequentialAnimation on opacity {
+                                loops: Animation.Infinite
+                                running: headerCursor.visible
+                                PropertyAnimation { to: 0.1; duration: 500 }
+                                PropertyAnimation { to: 1.0; duration: 500 }
+                              }
+                            }
+
+                            MouseArea {
+                              anchors.fill: parent
+                              cursorShape: Qt.IBeamCursor
+                              onClicked: function(mouse) {
+                                if (root.editingLineIndex >= 0) {
+                                  root.commitCurrentEditingTask(false)
+                                }
+                                var pos = headerEdit.positionAt(mouse.x, mouse.y)
+                                root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
+                              }
+                              onDoubleClicked: root.toggleViewMode(true)
+                            }
+                          }
                         }
                       }
                     }
@@ -2312,6 +2592,7 @@ BarWidget {
 
                         Item {
                           Layout.fillWidth: true
+                          Layout.preferredWidth: 0
                           implicitHeight: bulletEdit.paintedHeight
 
                           TextEdit {
@@ -2321,7 +2602,7 @@ BarWidget {
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
-                            wrapMode: TextEdit.Wrap
+                            wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
                             textFormat: TextEdit.PlainText
                             readOnly: true
                             selectByMouse: false
@@ -2351,6 +2632,9 @@ BarWidget {
                             anchors.fill: parent
                             cursorShape: Qt.IBeamCursor
                             onClicked: function(mouse) {
+                              if (root.editingLineIndex >= 0) {
+                                root.commitCurrentEditingTask(false)
+                              }
                               var pos = bulletEdit.positionAt(mouse.x, mouse.y)
                               root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
                             }
@@ -2386,6 +2670,7 @@ BarWidget {
 
                         Item {
                           Layout.fillWidth: true
+                          Layout.preferredWidth: 0
                           implicitHeight: numEdit.paintedHeight
 
                           TextEdit {
@@ -2395,7 +2680,7 @@ BarWidget {
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
-                            wrapMode: TextEdit.Wrap
+                            wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
                             textFormat: TextEdit.PlainText
                             readOnly: true
                             selectByMouse: false
@@ -2425,6 +2710,9 @@ BarWidget {
                             anchors.fill: parent
                             cursorShape: Qt.IBeamCursor
                             onClicked: function(mouse) {
+                              if (root.editingLineIndex >= 0) {
+                                root.commitCurrentEditingTask(false)
+                              }
                               var pos = numEdit.positionAt(mouse.x, mouse.y)
                               root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
                             }
@@ -2451,6 +2739,7 @@ BarWidget {
 
                         Item {
                           Layout.fillWidth: true
+                          Layout.preferredWidth: 0
                           implicitHeight: quoteEdit.paintedHeight
 
                           TextEdit {
@@ -2461,7 +2750,7 @@ BarWidget {
                             font.pixelSize: Style.font.body
                             font.italic: true
                             color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.75)
-                            wrapMode: TextEdit.Wrap
+                            wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
                             textFormat: TextEdit.PlainText
                             readOnly: true
                             selectByMouse: false
@@ -2491,6 +2780,9 @@ BarWidget {
                             anchors.fill: parent
                             cursorShape: Qt.IBeamCursor
                             onClicked: function(mouse) {
+                              if (root.editingLineIndex >= 0) {
+                                root.commitCurrentEditingTask(false)
+                              }
                               var pos = quoteEdit.positionAt(mouse.x, mouse.y)
                               root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
                             }
@@ -2557,7 +2849,7 @@ BarWidget {
                           font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                           font.pixelSize: Style.font.body
                           color: Commons.Color.foreground
-                          wrapMode: TextEdit.Wrap
+                          wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
                           textFormat: TextEdit.PlainText
                           readOnly: true
                           selectByMouse: false
@@ -2587,6 +2879,9 @@ BarWidget {
                           anchors.fill: parent
                           cursorShape: Qt.IBeamCursor
                           onClicked: function(mouse) {
+                            if (root.editingLineIndex >= 0) {
+                              root.commitCurrentEditingTask(false)
+                            }
                             var pos = textEdit.positionAt(mouse.x, mouse.y)
                             root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, pos)
                           }
@@ -2598,14 +2893,14 @@ BarWidget {
                 }
               }
 
-              // "+ Add task" button row (Todoist style)
+              // "+ Add task" button row (Todoist style) - fallback when NO completed section exists
               Item {
                 anchors.top: previewColumn.bottom
                 anchors.topMargin: Style.space(8)
                 anchors.left: parent.left
                 width: parent.width
                 height: Style.space(26)
-                visible: root.viewMode === "preview" && root.activeTab === "tasks"
+                visible: root.viewMode === "preview" && root.activeTab === "tasks" && root.completedHeaderLineIndex < 0
 
                 RowLayout {
                   anchors.fill: parent
@@ -2649,7 +2944,12 @@ BarWidget {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: Qt.PointingHandCursor
-                  onClicked: root.addNewTaskAtEnd()
+                  onClicked: {
+                    if (root.editingLineIndex >= 0) {
+                      root.commitCurrentEditingTask(false)
+                    }
+                    root.addNewTaskAtEnd()
+                  }
                 }
               }
 
@@ -2662,11 +2962,17 @@ BarWidget {
                 anchors.bottom: parent.bottom
                 cursorShape: Qt.IBeamCursor
                 onClicked: {
+                  if (root.editingLineIndex >= 0) {
+                    root.commitCurrentEditingTask(false)
+                    if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
+                    return
+                  }
                   if (root.activeTab === "tasks") {
                     root.addNewTaskAtEnd()
                   } else {
                     root.setPendingCursorAfterLast()
                   }
+                }
                 }
                 onDoubleClicked: root.toggleViewMode(true)
               }
