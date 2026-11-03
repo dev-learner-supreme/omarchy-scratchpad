@@ -602,6 +602,13 @@ BarWidget {
   }
 
   readonly property bool opened: panel.open
+  property bool popoutSwitchClosing: false
+
+  function closeForPopoutSwitch() {
+    popoutSwitchClosing = true
+    close()
+    Qt.callLater(function() { popoutSwitchClosing = false })
+  }
 
   function open() {
     panel.open = true
@@ -1496,7 +1503,9 @@ BarWidget {
     owner: root
     bar: root.bar
     open: false
-    centerOnBar: true
+    // Anchor under the widget rather than the middle of the bar, so the
+    // popup follows wherever the widget is placed.
+    centerOnBar: false
     // Squarish minimal footprint (~420 x 460) with zero nested borders
     contentWidth: panel.fittedContentWidth(Style.space(420))
     contentHeight: panel.fittedContentHeight(panel.loadedContentHeight, Style.space(500))
