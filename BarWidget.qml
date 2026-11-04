@@ -1043,6 +1043,23 @@ BarWidget {
       return
     }
 
+    // 7. Empty blockquote ("> ") -> clear prefix to exit quote cleanly
+    var emptyQuote = line.match(/^(\s*>\s*)$/)
+    if (emptyQuote) {
+      event.accepted = true
+      editor.text = txt.substring(0, lineStart) + txt.substring(lineEnd)
+      editor.cursorPosition = lineStart
+      return
+    }
+
+    // 8. Blockquote continuation ("> text") -> only continue if at end of line with text
+    var quoteMatch = line.match(/^(\s*>\s+)(.+)$/)
+    if (quoteMatch && isAtEnd) {
+      event.accepted = true
+      editor.insert(pos, "\n" + quoteMatch[1])
+      return
+    }
+
     // Default: Native plain newline (never intercepts regular text typing)
   }
 
@@ -1094,6 +1111,58 @@ BarWidget {
     }
   }
 
+  // --- Obsidian Markdown Rich Text Formatter ---
+  function formatMarkdownRichText(raw) {
+    if (!raw) return ""
+    var s = raw
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+
+    var pillStyle = "background-color: rgba(255,255,255,0.12); color: " + Commons.Color.accent + "; font-family: monospace;"
+
+    var codeTokens = []
+    function saveCode(code) {
+      var idx = codeTokens.length
+      codeTokens.push("<span style=\"" + pillStyle + "\">&nbsp;<code>" + code + "</code>&nbsp;</span>")
+      return "___CODE_TOKEN_" + idx + "___"
+    }
+
+    // 1. Triple-backtick inline code: ```code```
+    s = s.replace(/```([^`\n]+)```/g, function(m, code) {
+      return saveCode(code)
+    })
+
+    // 2. Single-backtick inline code: `code`
+    s = s.replace(/`([^`\n]+)`/g, function(m, code) {
+      return saveCode(code)
+    })
+
+    // 3. Bold: **text** or __text__
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "<b>$1</b>")
+    s = s.replace(/__([^_\n]+)__/g, "<b>$1</b>")
+
+    // 4. Strikethrough: ~~text~~
+    s = s.replace(/~~([^~\n]+)~~/g, "<s>$1</s>")
+
+    // 5. Italic: *text* or _text_
+    s = s.replace(/\*([^*\n]+)\*/g, "<i>$1</i>")
+    s = s.replace(/(^|\s)_([^_\n]+)_(?=\s|$|[.,;:!?])/g, "$1<i>$2</i>")
+
+    // 6. Highlight: ==text==
+    s = s.replace(/==([^=\n]+)==/g, "<span style=\"background-color: rgba(255,215,0,0.25); color: #ffd700;\">$1</span>")
+
+    // 7. Markdown Links: [text](url)
+    s = s.replace(/\[([^\]\n]+)\]\(([^)\n]+)\)/g, "<a href=\"$2\" style=\"color: " + Commons.Color.accent + "; text-decoration: underline;\">$1</a>")
+
+    // Restore protected code tokens
+    for (var k = 0; k < codeTokens.length; k++) {
+      s = s.replace("___CODE_TOKEN_" + k + "___", codeTokens[k])
+    }
+
+    return s
+  }
+
   // --- Typora Preview Renderer Parser ---
   function refreshParsedItems() {
     var lines = currentText.split("\n")
@@ -1130,15 +1199,26 @@ BarWidget {
         continue
       }
 
-      // Code blocks
+      // Code blocks (multi-line or single-line ```code```)
       if (raw.trim().startsWith("```")) {
+        // 1. Single-line code block: ```code``` or ```lang code```
+        var singleCode = raw.trim().match(/^```([a-zA-Z0-9_-]*)\s*(.+?)\s*```$/)
+        if (singleCode && !inCodeBlock) {
+          pushItem({
+            lineIndex: i,
+            itemType: "code",
+            content: singleCode[2],
+            indent: 0
+          })
+          continue
+        }
+
+        // 2. Multi-line code block toggle
         if (inCodeBlock) {
-          codeLines.push(raw)
-          var codeBody = (codeLines.length >= 2) ? codeLines.slice(1, -1).join("\n") : ""
           pushItem({
             lineIndex: codeStartIdx,
             itemType: "code",
-            content: codeBody,
+            content: codeLines.join("\n"),
             indent: 0
           })
           codeLines = []
@@ -1146,7 +1226,7 @@ BarWidget {
         } else {
           inCodeBlock = true
           codeStartIdx = i
-          codeLines = [raw]
+          codeLines = []
         }
         continue
       }
@@ -1282,11 +1362,10 @@ BarWidget {
     }
 
     if (inCodeBlock && codeLines.length > 0) {
-      var unclosedBody = (codeLines.length > 1) ? codeLines.slice(1).join("\n") : ""
       pushItem({
         lineIndex: codeStartIdx,
         itemType: "code",
-        content: unclosedBody,
+        content: codeLines.join("\n"),
         indent: 0
       })
     }
@@ -1321,6 +1400,21 @@ BarWidget {
     var lines = currentText.split("\n")
     if (lineIdx < 0 || lineIdx >= lines.length) return
     var raw = lines[lineIdx]
+
+    // Scratchpad tab: toggle checkbox in-place without moving to ### Completed
+    if (root.activeTab === "scratchpad") {
+      if (raw.match(/^(\s*[-*]\s*)\[ \]/)) {
+        lines[lineIdx] = raw.replace(/^(\s*[-*]\s*)\[ \]/, "$1[x]")
+      } else if (raw.match(/^(\s*[-*]\s*)\[[xX]\]/)) {
+        lines[lineIdx] = raw.replace(/^(\s*[-*]\s*)\[[xX]\]/, "$1[ ]")
+      }
+      var newTxt = lines.join("\n")
+      currentText = newTxt
+      scratchpadText = newTxt
+      saveNow()
+      refreshParsedItems()
+      return
+    }
 
     if (raw.match(/^(\s*[-*]\s*)\[ \]/)) {
       // 1. Completing an active task -> move to ### Completed
@@ -2720,12 +2814,12 @@ BarWidget {
                               id: staticText
                               anchors.fill: parent
                               visible: !taskRowLayout.isEditingThisTask
-                              text: (modelData.cleanContent !== undefined && modelData.cleanContent.length > 0) ? modelData.cleanContent : "New task"
+                              text: (modelData.cleanContent !== undefined && modelData.cleanContent.length > 0) ? root.formatMarkdownRichText(modelData.cleanContent) : "New task"
                               font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                               font.features: ({ "calt": 1, "liga": 1 })
                               font.pixelSize: Style.font.body
                               font.strikeout: modelData.checked
-                              textFormat: Text.MarkdownText
+                              textFormat: Text.RichText
                               color: (modelData.content && modelData.content.length > 0)
                                 ? (modelData.checked ? Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45) : Commons.Color.foreground)
                                 : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.35)
@@ -2863,14 +2957,20 @@ BarWidget {
                             anchors.fill: parent
                             anchors.topMargin: Style.space(4)
                             anchors.bottomMargin: Style.space(2)
-                            text: modelData.content
+                            text: root.formatMarkdownRichText(modelData.content)
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                             font.features: ({ "calt": 1, "liga": 1 })
-                            font.pixelSize: modelData.level === 1 ? Style.font.title + Style.space(2) : (modelData.level === 2 ? Style.font.title : Style.font.body + Style.space(2))
+                            font.pixelSize: {
+                              if (modelData.level === 1) return Style.font.title + Style.space(4)
+                              if (modelData.level === 2) return Style.font.title + Style.space(1)
+                              if (modelData.level === 3) return Style.font.body + Style.space(2)
+                              if (modelData.level === 4) return Style.font.body + Style.space(1)
+                              return Style.font.body
+                            }
                             font.bold: true
                             color: modelData.level === 1 ? Commons.Color.accent : Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.MarkdownText
+                            textFormat: TextEdit.RichText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -2943,13 +3043,13 @@ BarWidget {
                           TextEdit {
                             id: bulletEdit
                             anchors.fill: parent
-                            text: modelData.content
+                            text: root.formatMarkdownRichText(modelData.content)
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                             font.features: ({ "calt": 1, "liga": 1 })
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.MarkdownText
+                            textFormat: TextEdit.RichText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -3022,13 +3122,13 @@ BarWidget {
                           TextEdit {
                             id: numEdit
                             anchors.fill: parent
-                            text: modelData.content
+                            text: root.formatMarkdownRichText(modelData.content)
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                             font.features: ({ "calt": 1, "liga": 1 })
                             font.pixelSize: Style.font.body
                             color: Commons.Color.foreground
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.MarkdownText
+                            textFormat: TextEdit.RichText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -3092,14 +3192,14 @@ BarWidget {
                           TextEdit {
                             id: quoteEdit
                             anchors.fill: parent
-                            text: modelData.content
+                            text: root.formatMarkdownRichText(modelData.content)
                             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                             font.features: ({ "calt": 1, "liga": 1 })
                             font.pixelSize: Style.font.body
                             font.italic: true
                             color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.75)
                             wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                            textFormat: TextEdit.MarkdownText
+                            textFormat: TextEdit.RichText
                             readOnly: true
                             selectByMouse: false
                             activeFocusOnTab: false
@@ -3146,27 +3246,39 @@ BarWidget {
 
                       Rectangle {
                         width: previewColumn.width
-                        implicitHeight: codeText.implicitHeight + Style.space(12)
+                        implicitHeight: codeEdit.paintedHeight + Style.space(16)
+                        height: implicitHeight
                         radius: Style.cornerRadius
-                        color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.05)
+                        color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.08)
+                        border.width: 1
+                        border.color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.15)
 
-                        Text {
-                          id: codeText
+                        TextEdit {
+                          id: codeEdit
                           anchors.fill: parent
-                          anchors.margins: Style.space(6)
+                          anchors.margins: Style.space(8)
                           text: modelData.content
                           font.family: Style.font.monospace
                           font.features: ({ "calt": 1, "liga": 1 })
                           font.pixelSize: Style.font.caption
                           color: Commons.Color.foreground
-                          wrapMode: Text.Wrap
-                          textFormat: Text.PlainText
+                          wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
+                          textFormat: TextEdit.PlainText
+                          readOnly: true
+                          selectByMouse: false
+                          activeFocusOnTab: false
+                          cursorVisible: false
                         }
 
                         MouseArea {
                           anchors.fill: parent
                           cursorShape: Qt.IBeamCursor
-                          onClicked: root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, 0)
+                          onClicked: function(mouse) {
+                            if (root.editingLineIndex >= 0) {
+                              root.commitCurrentEditingTask(false)
+                            }
+                            root.setPendingCursorOnLine(modelData.lineIndex, modelData.itemType, 0)
+                          }
                           onDoubleClicked: root.toggleViewMode(true)
                         }
                       }
@@ -3176,10 +3288,17 @@ BarWidget {
                     Component {
                       id: dividerPreviewDelegate
 
-                      Rectangle {
+                      Item {
                         width: previewColumn.width
-                        height: 1
-                        color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.15)
+                        height: Style.space(14)
+                        implicitHeight: Style.space(14)
+
+                        Rectangle {
+                          anchors.centerIn: parent
+                          width: parent.width
+                          height: 1
+                          color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.15)
+                        }
                       }
                     }
 
@@ -3212,13 +3331,13 @@ BarWidget {
                         TextEdit {
                           id: textEdit
                           anchors.fill: parent
-                          text: modelData.content
+                          text: root.formatMarkdownRichText(modelData.content)
                           font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
                           font.features: ({ "calt": 1, "liga": 1 })
                           font.pixelSize: Style.font.body
                           color: Commons.Color.foreground
                           wrapMode: TextEdit.WrapAtWordBoundaryOrAnywhere
-                          textFormat: TextEdit.MarkdownText
+                          textFormat: TextEdit.RichText
                           readOnly: true
                           selectByMouse: false
                           activeFocusOnTab: false
