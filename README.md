@@ -12,7 +12,7 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 * **Inline Task Editing:** Click anywhere on a task description or timestamp to edit in place with multi-line text wrapping.
 * **Rapid Task Entry:** Press `Enter` to commit the active task and immediately spawn the next item. Press `Escape` or `Backspace` on an empty task to dismiss.
 * **Template Defaulting:** Adding a new task without typing text preserves `"New task"` rather than discarding the entry.
-* **Clear Completed:** Trash icon beside the Completed heading purges completed items permanently (backups keep a snapshot).
+* **Clear Completed:** Trash icon beside the Completed heading purges completed items permanently (version history keeps the previous state).
 
 ### 2. Typora-Style Scratchpad
 * **Live Markdown Rendering:** Renders headers, lists, code blocks, blockquotes, and formatting live in preview mode.
@@ -27,7 +27,7 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 ### 4. Hardware Harmony & Performance
 * **Minimal Footprint:** Consumes ~4-6 MB resident memory in Quickshell with 0.0% idle CPU overhead.
 * **Atomic Persistence:** Content is piped to `save.py` over stdin (no argv size limit), writes are serialized through a single queue, use a unique temp file plus `fsync` and rename, and the file watcher ignores reloads while local changes are unsaved.
-* **Rolling Backups:** Up to 30 snapshots per note in `backups/`, taken at most every 2 minutes, or immediately when a save shrinks a note by more than half (e.g. Clear). Restore by copying a snapshot over `tasks.md` or `scratchpad.md`.
+* **Git History:** Every save that replaces a note commits the previous version to a local repo (`history.git`, isolated from your global git config). Commits are throttled to once per 2 minutes, but a save that shrinks a note by more than half (e.g. Clear) always commits first. Failures never block saving.
 * **Reminders:** Due tasks notify once, up to 6 hours late (covers shell restarts); dedupe entries expire after 30 days.
 
 ---
@@ -76,7 +76,15 @@ All user notes and state persist under standard XDG state paths:
 * `~/.local/state/omarchy/scratchpad/tasks.md` - Active and completed markdown tasks
 * `~/.local/state/omarchy/scratchpad/scratchpad.md` - Freeform markdown notes
 * `~/.local/state/omarchy/scratchpad/active_tab.txt` - Remembers last open tab
-* `~/.local/state/omarchy/scratchpad/backups/` - Rolling snapshots
+* `~/.local/state/omarchy/scratchpad/history.git` - Local version history of both notes
+
+Browse or restore history:
+
+```bash
+H=~/.local/state/omarchy/scratchpad
+git --git-dir=$H/history.git log -p -- tasks.md          # what changed, and when
+git --git-dir=$H/history.git show <rev>:tasks.md > $H/tasks.md   # restore a version
+```
 
 ---
 

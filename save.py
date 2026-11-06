@@ -2,18 +2,32 @@
 """Atomic note writer. Usage: save.py <name>   (content on stdin, never argv).
 
 Writes <state>/omarchy/scratchpad/<name>[.md] via unique temp file + fsync + rename.
-For notes (tasks, scratchpad) keeps rolling backups in backups/ so a clear or bad
-save is recoverable.
+For notes (tasks, scratchpad) commits the replaced version to a local git repo
+(history.git) so any earlier state is recoverable.
 """
 import os
+import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
 NOTES = ("tasks", "scratchpad")
-BACKUP_KEEP = 30          # per note
-BACKUP_MIN_GAP_S = 120    # snapshot at most this often unless content is shrinking hard
+HISTORY_MIN_GAP_S = 120   # commit at most this often unless a save shrinks the note hard
+GIT_TIMEOUT_S = 15
+
+# Isolate from the user's git config (hooks, signing, templates): history must never
+# depend on or be blocked by global settings.
+GIT_ENV = {
+    **os.environ,
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "scratchpad",
+    "GIT_AUTHOR_EMAIL": "scratchpad@localhost",
+    "GIT_COMMITTER_NAME": "scratchpad",
+    "GIT_COMMITTER_EMAIL": "scratchpad@localhost",
+}
 
 
 def state_dir() -> Path:
@@ -45,29 +59,42 @@ def sync_write(target: Path, content: str) -> None:
         pass
 
 
-def backup(target: Path, base: str, new_content: str) -> None:
-    """Snapshot the file about to be replaced."""
+def git(d: Path, *args: str) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", f"--git-dir={d / 'history.git'}", f"--work-tree={d}",
+         "-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false",
+         "-c", "gc.auto=200", *args],
+        env=GIT_ENV, cwd=d, capture_output=True, text=True, timeout=GIT_TIMEOUT_S,
+    )
+
+
+def record_history(d: Path, name: str, target: Path, new_content: str) -> None:
+    """Commit the on-disk (about to be replaced) note to the local history repo.
+
+    Committing the old state means a bad save, Clear, or wipe is always recoverable.
+    Best effort: any failure is swallowed so saving is never blocked.
+    """
     try:
         old = target.read_text(encoding="utf-8")
     except OSError:
         return
     if not old.strip() or old == new_content:
         return
-    bdir = target.parent / "backups"
-    bdir.mkdir(exist_ok=True)
-    existing = sorted(bdir.glob(f"{base}.*.md"))
-    shrinking = len(new_content) < len(old) * 0.5
-    if existing and not shrinking:
-        if time.time() - existing[-1].stat().st_mtime < BACKUP_MIN_GAP_S:
+    try:
+        if not (d / "history.git").exists():
+            git(d, "init", "-q")
+        last = git(d, "log", "-1", "--format=%ct")
+        last_ts = int(last.stdout.strip()) if last.returncode == 0 and last.stdout.strip() else 0
+        shrinking = len(new_content) < len(old) * 0.5
+        if last_ts and not shrinking and time.time() - last_ts < HISTORY_MIN_GAP_S:
             return
-    stamp = time.strftime("%Y%m%d-%H%M%S") + f"{int(time.time() * 1000) % 1000:03d}"
-    sync_write(bdir / f"{base}.{stamp}.md", old)
-    existing = sorted(bdir.glob(f"{base}.*.md"))
-    for stale in existing[:-BACKUP_KEEP]:
-        try:
-            stale.unlink()
-        except OSError:
-            pass
+        git(d, "add", "--", name)
+        git(d, "commit", "-q", "--no-verify", "-m",
+            f"{name[:-3]} {time.strftime('%Y-%m-%d %H:%M:%S')} ({len(old)} -> {len(new_content)} chars)",
+            "--", name)
+        git(d, "gc", "--auto", "--quiet")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pass
 
 
 def main() -> int:
@@ -83,7 +110,7 @@ def main() -> int:
     content = sys.stdin.read()
     target = d / name
     if base in NOTES and name.endswith(".md"):
-        backup(target, base, content)
+        record_history(d, name, target, content)
     sync_write(target, content)
     return 0
 
