@@ -30,6 +30,7 @@ BarWidget {
   readonly property bool autoShiftEnabled: true
 
   property int editingLineIndex: -1
+  onEditingLineIndexChanged: if (editingLineIndex >= 0 && editingLineIndex !== selectedLine) selectedLine = -1
   property int selectedLine: -1   // keyboard-selected task row in preview (Up/Down select, Alt+Up/Down move)
   property string activeEditingText: ""
   property int completedHeaderLineIndex: -1
@@ -421,6 +422,30 @@ BarWidget {
     refreshParsedItems()
     saveDebounceTimer.restart()   // coalesce rapid repeated moves into one write
     return targetIdx
+  }
+
+  // Alt+Up/Down while editing a task: fold the in-progress text into the move in one step,
+  // keep the row in edit mode at its new position and keep it selected so moves can repeat.
+  function moveEditingTask(curLine, direction, text, caret) {
+    var lines = tasksText.split("\n")
+    if (curLine < 0 || curLine >= lines.length) return
+    var sanitized = sanitizeTaskContent(text)
+    if (sanitized.length === 0) return
+    var m = lines[curLine].match(/^(\s*[-*]\s*\[[ xX]\]\s*)/)
+    lines[curLine] = (m ? m[1] : "- [ ] ") + sanitized
+    tasksText = lines.join("\n")
+    currentText = tasksText
+
+    var moved = moveTaskLine(curLine, direction)
+    if (moved < 0) {
+      saveDebounceTimer.restart()
+      return
+    }
+    root.activeEditingText = sanitized
+    root.pendingCharOffset = caret
+    root.editingLineIndex = moved
+    root.selectedLine = moved
+    Qt.callLater(function() { root.requestTaskFocus(moved) })
   }
 
   // Moves keyboard selection to the previous/next task row (active then completed).
@@ -1740,6 +1765,7 @@ BarWidget {
           if (root.viewMode === "preview") {
             if (event.key === Qt.Key_Escape) {
               event.accepted = true
+              if (root.selectedLine >= 0) { root.selectedLine = -1; return }
               root.close()
               return
             }
@@ -2554,16 +2580,7 @@ BarWidget {
                                 if ((event.modifiers & Qt.AltModifier) && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
                                   event.accepted = true
                                   var dir = (event.key === Qt.Key_Up) ? -1 : 1
-                                  var curLine = modelData.lineIndex
-                                  var oldPos = cursorPosition
-                                  root.activeEditingText = inlineInput.text
-                                  root.commitCurrentEditingTask(false)
-                                  var movedTo = root.moveTaskLine(curLine, dir)
-                                  if (movedTo >= 0) {
-                                    root.pendingCharOffset = oldPos
-                                    root.editingLineIndex = movedTo
-                                    root.requestTaskFocus(movedTo)
-                                  }
+                                  root.moveEditingTask(modelData.lineIndex, dir, inlineInput.text, cursorPosition)
                                   return
                                 }
                               }
