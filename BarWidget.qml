@@ -19,15 +19,13 @@ BarWidget {
 
   property string tasksText: ""
   property string lastSavedTasksText: ""
-  property string tasksViewMode: "preview"
 
   property string scratchpadText: ""
   property string lastSavedScratchpadText: ""
   property string scratchpadViewMode: "preview"
 
   // Active viewMode dynamically bound to current tab's viewMode
-  readonly property string viewMode: (activeTab === "tasks") ? tasksViewMode : scratchpadViewMode
-  readonly property bool autoShiftEnabled: true
+  readonly property string viewMode: (activeTab === "tasks") ? "preview" : scratchpadViewMode
 
   property int editingLineIndex: -1
   onEditingLineIndexChanged: if (editingLineIndex >= 0) selectedLine = editingLineIndex   // editing a row selects it
@@ -108,6 +106,16 @@ BarWidget {
 
   property string currentText: ""
   property string statusMessage: "Saved"
+  property string hintText: ""
+  function showHint(t) {
+    hintText = t
+    hintTimer.restart()
+  }
+  Timer {
+    id: hintTimer
+    interval: 2500
+    onTriggered: root.hintText = ""
+  }
   property int wordCount: 0
   property int charCount: 0
   property var parsedItems: []
@@ -689,7 +697,6 @@ BarWidget {
     if (root.editingLineIndex >= 0) {
       root.commitCurrentEditingTask(false)
     }
-    autoPreviewTimer.stop()
     cleanEmptyTaskLines()
     saveNow()
     clearPendingCursor()
@@ -697,7 +704,6 @@ BarWidget {
     root.activeEditingText = ""
     // Persist active tab and view modes
     enqueueSave("active_tab.txt", root.activeTab)
-    persistViewMode("tasks", tasksViewMode)
     persistViewMode("scratchpad", scratchpadViewMode)
     panel.open = false
   }
@@ -712,7 +718,6 @@ BarWidget {
     if (root.editingLineIndex >= 0) {
       root.commitCurrentEditingTask(false)
     }
-    autoPreviewTimer.stop()
     cleanEmptyTaskLines()
     clearPendingCursor()
 
@@ -751,67 +756,38 @@ BarWidget {
     })
   }
 
+  // Edit/preview applies to the Scratchpad tab only; Tasks are always edited inline.
   function toggleViewMode(willing) {
-    if (root.editingLineIndex >= 0) {
-      root.commitCurrentEditingTask(false)
-    }
-    autoPreviewTimer.stop()
+    if (activeTab === "tasks") return
     var targetCursor = root.pendingCursorPos
     var wasAfterLast = root.pendingAfterLast
     clearPendingCursor()
 
-    if (activeTab === "tasks") {
-      if (tasksViewMode === "edit") {
-        saveNow()
-        refreshParsedItems()
-        tasksViewMode = "preview"
-        persistViewMode("tasks", "preview")
-        Qt.callLater(function() {
-          if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
-        })
-      } else {
-        tasksViewMode = "edit"
-        persistViewMode("tasks", "edit")
-        Qt.callLater(function() {
-          if (panel.loadedContent && panel.loadedContent.editor) {
-            panel.loadedContent.editor.forceActiveFocus()
-            if (wasAfterLast) {
-              panel.loadedContent.editor.cursorPosition = panel.loadedContent.editor.text.length
-            } else if (targetCursor >= 0) {
-              panel.loadedContent.editor.cursorPosition = Math.min(panel.loadedContent.editor.text.length, targetCursor)
-            }
-          }
-        })
-        autoPreviewTimer.restart()
+    if (scratchpadViewMode === "edit") {
+      if (panel.loadedContent && panel.loadedContent.editor) {
+        currentText = panel.loadedContent.editor.text
+        scratchpadText = currentText
       }
+      saveNow()
+      refreshParsedItems()
+      scratchpadViewMode = "preview"
+      persistViewMode("scratchpad", "preview")
+      Qt.callLater(function() {
+        if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
+      })
     } else {
-      // Scratchpad tab: freely toggle between edit and preview, NO auto-shift timer!
-      if (scratchpadViewMode === "edit") {
+      scratchpadViewMode = "edit"
+      persistViewMode("scratchpad", "edit")
+      Qt.callLater(function() {
         if (panel.loadedContent && panel.loadedContent.editor) {
-          currentText = panel.loadedContent.editor.text
-          scratchpadText = currentText
-        }
-        saveNow()
-        refreshParsedItems()
-        scratchpadViewMode = "preview"
-        persistViewMode("scratchpad", "preview")
-        Qt.callLater(function() {
-          if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
-        })
-      } else {
-        scratchpadViewMode = "edit"
-        persistViewMode("scratchpad", "edit")
-        Qt.callLater(function() {
-          if (panel.loadedContent && panel.loadedContent.editor) {
-            panel.loadedContent.editor.forceActiveFocus()
-            if (wasAfterLast) {
-              panel.loadedContent.editor.cursorPosition = panel.loadedContent.editor.text.length
-            } else if (targetCursor >= 0) {
-              panel.loadedContent.editor.cursorPosition = Math.min(panel.loadedContent.editor.text.length, targetCursor)
-            }
+          panel.loadedContent.editor.forceActiveFocus()
+          if (wasAfterLast) {
+            panel.loadedContent.editor.cursorPosition = panel.loadedContent.editor.text.length
+          } else if (targetCursor >= 0) {
+            panel.loadedContent.editor.cursorPosition = Math.min(panel.loadedContent.editor.text.length, targetCursor)
           }
-        })
-      }
+        }
+      })
     }
   }
 
@@ -842,68 +818,28 @@ BarWidget {
   }
 
   function shiftToEditAndType(key, text) {
-    autoPreviewTimer.stop()
+    if (activeTab === "tasks") return
     var wasAfterLast = pendingAfterLast
     var targetCursor = pendingCursorPos
     clearPendingCursor()
-
-    if (activeTab === "tasks") {
-      tasksViewMode = "edit"
-      persistViewMode("tasks", "edit")
-    } else {
-      scratchpadViewMode = "edit"
-      persistViewMode("scratchpad", "edit")
-    }
+    scratchpadViewMode = "edit"
+    persistViewMode("scratchpad", "edit")
 
     Qt.callLater(function() {
       if (panel.loadedContent && panel.loadedContent.editor) {
         var ed = panel.loadedContent.editor
         ed.forceActiveFocus()
-
-        if (wasAfterLast || targetCursor < 0) {
-          var len = ed.text.length
-          ed.cursorPosition = len
-
-          if (root.activeTab === "tasks") {
-            var prefix = ""
-            if (len > 0 && !ed.text.endsWith("\n")) {
-              prefix = "\n- [ ] "
-            } else if (!ed.text.endsWith("- [ ] ")) {
-              prefix = "- [ ] "
-            }
-            if (prefix.length > 0) {
-              ed.insert(len, prefix)
-            }
-          } else {
-            if (len > 0 && !ed.text.endsWith("\n")) {
-              ed.insert(len, "\n")
-            }
-          }
-          ed.cursorPosition = ed.text.length
-
-          if (text && text.length > 0 && key !== Qt.Key_Return && key !== Qt.Key_Enter && key !== Qt.Key_Backspace) {
-            ed.insert(ed.cursorPosition, text)
-            ed.cursorPosition = ed.text.length
-          }
-        } else {
-          var pos = Math.min(ed.text.length, Math.max(0, targetCursor))
-          ed.cursorPosition = pos
-
-          if (key === Qt.Key_Return || key === Qt.Key_Enter) {
-            root.handleReturn(ed, { accepted: false })
-          } else if (key === Qt.Key_Backspace) {
-            if (pos > 0) {
-              ed.remove(pos - 1, pos)
-              ed.cursorPosition = pos - 1
-            }
-          } else if (text && text.length > 0) {
-            ed.insert(pos, text)
-            ed.cursorPosition = Math.min(ed.text.length, pos + text.length)
-          }
+        var pos = (wasAfterLast || targetCursor < 0) ? ed.text.length : Math.min(ed.text.length, Math.max(0, targetCursor))
+        if (wasAfterLast && ed.text.length > 0 && !ed.text.endsWith("\n")) {
+          ed.insert(ed.text.length, "\n")
+          pos = ed.text.length
         }
-
-        if (root.autoShiftEnabled && root.activeTab === "tasks") {
-          autoPreviewTimer.restart()
+        ed.cursorPosition = pos
+        if (key === Qt.Key_Return || key === Qt.Key_Enter) {
+          root.handleReturn(ed, { accepted: false })
+        } else if (text && text.length > 0) {
+          ed.insert(pos, text)
+          ed.cursorPosition = pos + text.length
         }
       }
     })
@@ -937,9 +873,6 @@ BarWidget {
     updateCounts(newText)
     statusMessage = "..."
     saveDebounceTimer.restart()
-    if (autoShiftEnabled && activeTab === "tasks") {
-      autoPreviewTimer.restart()
-    }
   }
 
   function updateCounts(txt) {
@@ -1523,26 +1456,6 @@ BarWidget {
     onTriggered: root.saveNow()
   }
 
-  // Auto-shift back to preview mode after user pauses typing in edit mode (Tasks only)
-  Timer {
-    id: autoPreviewTimer
-    interval: 3000
-    repeat: false
-    onTriggered: {
-      if (root.activeTab === "tasks" && root.tasksViewMode === "edit" && root.opened) {
-        root.saveNow()
-        root.refreshParsedItems()
-        root.tasksViewMode = "preview"
-        root.persistViewMode("tasks", "preview")
-        Qt.callLater(function() {
-          if (panel.loadedContent) {
-            panel.loadedContent.forceActiveFocus()
-          }
-        })
-      }
-    }
-  }
-
   FileView {
     id: tasksFile
     path: root.storageDir + "/tasks.md"
@@ -1619,18 +1532,6 @@ BarWidget {
         if (targetText) {
           root.syncActiveTabContent(targetText)
         }
-      }
-    }
-  }
-
-  FileView {
-    id: tasksViewFile
-    path: root.storageDir + "/tasks_view.txt"
-    printErrors: false
-    onLoaded: {
-      var v = text().trim()
-      if (v === "preview" || v === "edit") {
-        root.tasksViewMode = v
       }
     }
   }
@@ -1833,8 +1734,14 @@ BarWidget {
               }
             } else {
               // Scratchpad tab:
-              // Preview mode is read-only by default. Does NOT auto-shift on typing.
-              // To edit, click Edit button or press Ctrl+E.
+              // Preview is read-only and never auto-switches; hint how to edit instead.
+              var typing = event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Backspace
+                || (event.text && event.text.length > 0 && event.text.charCodeAt(0) >= 32
+                    && !(event.modifiers & (Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)))
+              if (typing) {
+                event.accepted = true
+                root.showHint("Preview mode. Press Ctrl+E to edit.")
+              }
             }
           }
         }
@@ -1898,6 +1805,7 @@ BarWidget {
 
               // Toggle Edit / Preview Mode (Ctrl+E)
               PanelActionButton {
+                visible: root.activeTab === "scratchpad"
                 iconText: (root.viewMode === "preview") ? "\uf044" : "\uf06e"
                 tooltipText: (root.viewMode === "preview") ? "Edit Note (Ctrl+E)" : "Preview Note (Ctrl+E)"
                 onClicked: root.toggleViewMode(true)
@@ -1962,6 +1870,31 @@ BarWidget {
             font.pixelSize: Style.font.caption - 1
             font.bold: true
             color: Commons.Color.accent
+            textFormat: Text.PlainText
+          }
+        }
+
+        // Transient hint pill (e.g. typing while in preview)
+        Rectangle {
+          visible: root.hintText.length > 0
+          anchors.horizontalCenter: parent.horizontalCenter
+          anchors.bottom: footerRow.top
+          anchors.bottomMargin: Style.space(8)
+          z: 50
+          width: hintLabel.implicitWidth + Style.space(20)
+          height: hintLabel.implicitHeight + Style.space(10)
+          radius: Style.cornerRadius
+          color: Qt.rgba(Commons.Color.background.r, Commons.Color.background.g, Commons.Color.background.b, 0.96)
+          border.width: 1
+          border.color: Commons.Color.accent
+
+          Text {
+            id: hintLabel
+            anchors.centerIn: parent
+            text: root.hintText
+            font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
+            font.pixelSize: Style.font.caption
+            color: Commons.Color.foreground
             textFormat: Text.PlainText
           }
         }
@@ -2072,9 +2005,6 @@ BarWidget {
               }
 
               Keys.onPressed: function(event) {
-                if (root.autoShiftEnabled && root.activeTab === "tasks") {
-                  autoPreviewTimer.restart()
-                }
                 if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_S) {
                   event.accepted = true
                   if (root.activeTab === "scratchpad") {

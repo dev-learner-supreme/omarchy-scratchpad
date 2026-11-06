@@ -16,7 +16,7 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 
 ### 2. Typora-Style Scratchpad
 * **Live Markdown Rendering:** Renders headers, lists, code blocks, blockquotes, and formatting live in preview mode.
-* **Preview First:** The Scratchpad tab opens in read-only preview. The eye/pencil icon in the header or `Ctrl+E` toggles editing. Edits autosave 350 ms after you stop typing; `Ctrl+S` saves immediately and returns to preview. Tasks edit inline and shift back to preview after 3 seconds idle.
+* **Preview First:** The Scratchpad tab opens in read-only preview. Typing in preview shows a short hint to press `Ctrl+E` instead of switching modes. The eye/pencil icon in the header or `Ctrl+E` toggles editing. Edits autosave 350 ms after you stop typing; `Ctrl+S` saves immediately and returns to preview. Tasks have no separate edit mode; rows edit inline.
 * **Decoupled Tabs:** Dedicated storage buffers for `Tasks` (`tasks.md`) and freeform `Scratchpad` (`scratchpad.md`), preserving independent view modes and last-opened state across restarts.
 
 ### 3. Native Due Dates & Reminders
@@ -57,7 +57,7 @@ omarchy restart shell
 | `Alt + \`` | Toggle Scratchpad panel open / close |
 | `Ctrl + 1` | Switch to Tasks tab |
 | `Ctrl + 2` | Switch to Scratchpad tab |
-| `Ctrl + E` | Toggle between Edit and Preview modes |
+| `Ctrl + E` | Toggle Edit and Preview (Scratchpad tab only) |
 | `Ctrl + D` | Insert current timestamp `[YY-MM-DD HH:MM]` at cursor |
 | `Ctrl + Shift + K` | Clear completed tasks (also the trash icon beside the Completed heading) |
 | `Ctrl + O` | Open the current note in the external editor (also right-click on the bar icon) |
@@ -76,7 +76,6 @@ All user notes and state persist under standard XDG state paths:
 * `~/.local/state/omarchy/scratchpad/tasks.md` - Active and completed markdown tasks
 * `~/.local/state/omarchy/scratchpad/scratchpad.md` - Freeform markdown notes
 * `~/.local/state/omarchy/scratchpad/active_tab.txt` - Remembers last open tab
-* `~/.local/state/omarchy/scratchpad/tasks_view.txt` - Remembers Tasks view mode
 * `~/.local/state/omarchy/scratchpad/scratchpad_view.txt` - Remembers Scratchpad view mode
 * `~/.local/state/omarchy/scratchpad/backups/` - Rolling snapshots
 
