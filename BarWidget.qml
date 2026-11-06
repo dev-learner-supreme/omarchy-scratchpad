@@ -2464,7 +2464,9 @@ BarWidget {
                         }
 
                         // Task Text Column: Toggle between interactive display and inline editing
-                        ColumnLayout {
+                        // Plain Column (not ColumnLayout): wrapping text plus the due-date badge
+                        // broke height-for-width in a layout, collapsing the text to one word per line.
+                        Column {
                           id: taskTextColumn
                           Layout.fillWidth: true
                           Layout.preferredWidth: 0
@@ -2474,9 +2476,9 @@ BarWidget {
 
                           Item {
                             id: editorItem
-                            Layout.fillWidth: true
-                            Layout.preferredWidth: 0
+                            width: taskTextColumn.width
                             implicitHeight: Math.max(Style.space(16), taskRowLayout.isEditingThisTask ? inlineInput.paintedHeight : staticText.paintedHeight)
+                            height: implicitHeight
 
                             // 1. Inline edit field (active when clicked or new task added)
                             TextEdit {
@@ -2665,6 +2667,8 @@ BarWidget {
                             visible: !taskRowLayout.isEditingThisTask && modelData.dueDate !== undefined && modelData.dueDate.length > 0
                             implicitWidth: dueDateLayout.implicitWidth
                             implicitHeight: dueDateLayout.implicitHeight
+                            width: implicitWidth
+                            height: implicitHeight
 
                             readonly property bool isOverdue: {
                               if (!modelData.dueDate) return false
