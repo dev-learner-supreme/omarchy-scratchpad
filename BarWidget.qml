@@ -29,17 +29,8 @@ BarWidget {
   readonly property string viewMode: (activeTab === "tasks") ? tasksViewMode : scratchpadViewMode
   readonly property bool autoShiftEnabled: true
 
-  property bool dragActive: false
-  property int draggedLineIndex: -1
-  property int draggedItemIndex: -1
-  property string draggedContent: ""
-  property bool draggedChecked: false
-  property string draggedDueDate: ""
-  property real dragGhostY: 0
-  property int dropTargetIndex: -1
-  property int dropTargetLineIndex: -1
-  property bool dropBefore: true
   property int editingLineIndex: -1
+  property int selectedLine: -1   // keyboard-selected task row in preview (Up/Down select, Alt+Up/Down move)
   property string activeEditingText: ""
   property int completedHeaderLineIndex: -1
   property var activeItems: []
@@ -125,9 +116,59 @@ BarWidget {
   property int pendingCharOffset: -1
   property bool pendingAfterLast: false
 
+  // --- Serialized, stdin-based persistence (no argv size limit, no write races) ---
+  readonly property string savePath: Qt.resolvedUrl("save.py").toString().replace("file://", "")
+  property var saveQueue: ({})      // filename -> latest content awaiting write
+  property string savingName: ""
+
+  function enqueueSave(name, content) {
+    var q = root.saveQueue
+    q[name] = content
+    root.saveQueue = q
+    pumpSave()
+  }
+
+  function pumpSave() {
+    if (saver.running) return
+    var names = Object.keys(root.saveQueue)
+    if (names.length === 0) return
+    var name = names[0]
+    var content = root.saveQueue[name]
+    var q = root.saveQueue
+    delete q[name]
+    root.saveQueue = q
+    root.savingName = name
+    saver.pendingContent = content
+    saver.command = [root.savePath, name]
+    saver.running = true
+  }
+
+  function hasUnwrittenChanges(name) {
+    return root.savingName === name || root.saveQueue[name] !== undefined
+  }
+
+  Process {
+    id: saver
+    property string pendingContent: ""
+    stdinEnabled: true
+    onStarted: {
+      write(pendingContent)
+      stdinEnabled = false
+    }
+    onExited: function(code, status) {
+      if (code !== 0) {
+        console.warn("arun.scratchpad: save of " + root.savingName + " failed (exit " + code + ")")
+        root.statusMessage = "Save failed"
+      }
+      root.savingName = ""
+      saver.stdinEnabled = true
+      saver.pendingContent = ""
+      root.pumpSave()
+    }
+  }
+
   function persistViewMode(tab, mode) {
-    var filename = (tab === "tasks") ? "tasks_view.txt" : "scratchpad_view.txt"
-    Quickshell.execDetached(["sh", "-c", "echo -n '" + mode + "' > '" + storageDir + "/" + filename + "'"])
+    enqueueSave((tab === "tasks") ? "tasks_view.txt" : "scratchpad_view.txt", mode)
   }
 
   function pad2(n) {
@@ -191,55 +232,6 @@ BarWidget {
     saveNow()
   }
 
-  function applyTaskDrop(fromLineIdx, targetLineIdx, dropBefore) {
-    if (fromLineIdx < 0 || targetLineIdx < 0) return
-
-    var lines = tasksText.split("\n")
-    if (fromLineIdx >= lines.length || targetLineIdx >= lines.length) return
-    if (fromLineIdx === targetLineIdx) return
-
-    var taskLine = lines[fromLineIdx]
-    var insertLine = dropBefore ? targetLineIdx : (targetLineIdx + 1)
-
-    var compIdx = -1
-    for (var i = 0; i < lines.length; i++) {
-      if (lines[i].trim().match(/^#{1,6}\s+Completed$/i)) {
-        compIdx = i
-        break
-      }
-    }
-
-    if (compIdx !== -1) {
-      if (insertLine <= compIdx) {
-        taskLine = taskLine.replace(/^(\s*[-*]\s*)\[[xX]\]/, "$1[ ]")
-      } else {
-        taskLine = taskLine.replace(/^(\s*[-*]\s*)\[ \]/, "$1[x]")
-      }
-    }
-
-    lines.splice(fromLineIdx, 1)
-    var destLine = insertLine
-    if (fromLineIdx < destLine) {
-      destLine--
-    }
-    lines.splice(destLine, 0, taskLine)
-
-    var newText = lines.join("\n")
-    tasksText = newText
-    currentText = newText
-    if (panel.loadedContent && panel.loadedContent.editor) {
-      panel.loadedContent.editor.text = newText
-    }
-    refreshParsedItems()
-    saveNow()
-  }
-
-  function commitTaskDrop() {
-    var fromLineIdx = root.draggedLineIndex
-    var targetLineIdx = root.dropTargetLineIndex
-    var dropBefore = root.dropBefore
-    root.applyTaskDrop(fromLineIdx, targetLineIdx, dropBefore)
-  }
 
   function commitCurrentEditingTask(createNext) {
     autoSaveTaskTimer.stop()
@@ -404,17 +396,17 @@ BarWidget {
     })
   }
 
+  // Swaps the task with its nearest non-blank neighbour. Returns the new line index, or -1 if blocked.
   function moveTaskLine(fromLineIdx, direction) {
     var lines = tasksText.split("\n")
-    if (fromLineIdx < 0 || fromLineIdx >= lines.length) return false
+    if (fromLineIdx < 0 || fromLineIdx >= lines.length) return -1
 
     var targetIdx = fromLineIdx + direction
     while (targetIdx >= 0 && targetIdx < lines.length && lines[targetIdx].trim() === "") {
       targetIdx += direction
     }
-
-    if (targetIdx < 0 || targetIdx >= lines.length) return false
-    if (targetIdx >= 0 && targetIdx < lines.length && lines[targetIdx].trim().startsWith("#")) return false
+    if (targetIdx < 0 || targetIdx >= lines.length) return -1
+    if (lines[targetIdx].trim().startsWith("#")) return -1
 
     var temp = lines[fromLineIdx]
     lines[fromLineIdx] = lines[targetIdx]
@@ -427,8 +419,26 @@ BarWidget {
       panel.loadedContent.editor.text = newText
     }
     refreshParsedItems()
-    saveNow()
-    return true
+    saveDebounceTimer.restart()   // coalesce rapid repeated moves into one write
+    return targetIdx
+  }
+
+  // Moves keyboard selection to the previous/next task row (active then completed).
+  function selectTaskRelative(direction) {
+    var rows = []
+    var all = activeItems.concat(completedItems)
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].itemType === "task") rows.push(all[i].lineIndex)
+    }
+    if (rows.length === 0) return
+    var pos = rows.indexOf(selectedLine)
+    if (pos < 0) {
+      pos = (direction > 0) ? 0 : rows.length - 1
+    } else {
+      pos = Math.max(0, Math.min(rows.length - 1, pos + direction))
+    }
+    clearPendingCursor()
+    selectedLine = rows[pos]
   }
 
   function moveCurrentLine(editor, direction) {
@@ -501,7 +511,7 @@ BarWidget {
       if (isNaN(dueMs)) continue
       var reminderKey = line.trim() + "@" + dueMs
 
-      if (nowMs >= dueMs && (nowMs - dueMs) <= 15 * 60 * 1000) {
+      if (nowMs >= dueMs && (nowMs - dueMs) <= 6 * 60 * 60 * 1000) {
         if (!notifiedReminders[reminderKey]) {
           var cleanTask = taskBody.replace(tsMatch[0], "").trim()
           if (!cleanTask) cleanTask = "Task reminder"
@@ -523,9 +533,7 @@ BarWidget {
     }
 
     if (modified) {
-      var scriptPath = Qt.resolvedUrl("save.py").toString().replace("file://", "")
-      var jsonStr = JSON.stringify(notifiedReminders)
-      Quickshell.execDetached([scriptPath, "notified_reminders.json", jsonStr])
+      enqueueSave("notified_reminders.json", JSON.stringify(notifiedReminders))
     }
   }
 
@@ -651,6 +659,7 @@ BarWidget {
   }
 
   function close() {
+    root.selectedLine = -1
     if (root.editingLineIndex >= 0) {
       root.commitCurrentEditingTask(false)
     }
@@ -658,15 +667,10 @@ BarWidget {
     cleanEmptyTaskLines()
     saveNow()
     clearPendingCursor()
-    root.dragActive = false
-    root.draggedItemIndex = -1
-    root.draggedLineIndex = -1
-    root.dropTargetIndex = -1
-    root.dropTargetLineIndex = -1
     root.editingLineIndex = -1
     root.activeEditingText = ""
     // Persist active tab and view modes
-    Quickshell.execDetached(["sh", "-c", "echo -n '" + root.activeTab + "' > '" + storageDir + "/active_tab.txt'"])
+    enqueueSave("active_tab.txt", root.activeTab)
     persistViewMode("tasks", tasksViewMode)
     persistViewMode("scratchpad", scratchpadViewMode)
     panel.open = false
@@ -677,6 +681,7 @@ BarWidget {
   }
 
   function switchTab(tab) {
+    root.selectedLine = -1
     if (activeTab === tab) return
     if (root.editingLineIndex >= 0) {
       root.commitCurrentEditingTask(false)
@@ -706,7 +711,7 @@ BarWidget {
     }
 
     // 4. Persist active tab to disk
-    Quickshell.execDetached(["sh", "-c", "echo -n '" + tab + "' > '" + storageDir + "/active_tab.txt'"])
+    enqueueSave("active_tab.txt", tab)
 
     // 5. Restore focus
     Qt.callLater(function() {
@@ -919,18 +924,16 @@ BarWidget {
 
   function saveNow() {
     saveDebounceTimer.stop()
-    var scriptPath = Qt.resolvedUrl("save.py").toString().replace("file://", "")
-
     if (activeTab === "tasks") {
       if (currentText === lastSavedTasksText) return
       tasksText = currentText
       lastSavedTasksText = currentText
-      Quickshell.execDetached([scriptPath, "tasks", currentText])
+      enqueueSave("tasks.md", currentText)
     } else {
       if (currentText === lastSavedScratchpadText) return
       scratchpadText = currentText
       lastSavedScratchpadText = currentText
-      Quickshell.execDetached([scriptPath, "scratchpad", currentText])
+      enqueueSave("scratchpad.md", currentText)
     }
     statusMessage = strings.t("scratchpad.saved")
   }
@@ -1521,6 +1524,8 @@ BarWidget {
     printErrors: false
     onLoaded: {
       var t = text()
+      // Ignore reloads while our own writes are in flight or local edits are unsaved
+      if (root.hasUnwrittenChanges("tasks.md") || (root.activeTab === "tasks" && root.currentText !== root.lastSavedTasksText)) return
       root.tasksText = t
       root.lastSavedTasksText = t
       if (root.activeTab === "tasks") {
@@ -1567,6 +1572,7 @@ BarWidget {
     printErrors: false
     onLoaded: {
       var t = text()
+      if (root.hasUnwrittenChanges("scratchpad.md") || (root.activeTab === "scratchpad" && root.currentText !== root.lastSavedScratchpadText)) return
       root.scratchpadText = t
       root.lastSavedScratchpadText = t
       if (root.activeTab === "scratchpad") {
@@ -1742,14 +1748,27 @@ BarWidget {
               root.sweepCompletedTasks()
               return
             }
-            if ((event.modifiers & Qt.AltModifier) && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
+            if (root.activeTab === "tasks" && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
               event.accepted = true
-              if (root.pendingLineIndex >= 0) {
-                var dir = (event.key === Qt.Key_Up) ? -1 : 1
-                if (root.moveTaskLine(root.pendingLineIndex, dir)) {
-                  root.pendingLineIndex += dir
+              var dir = (event.key === Qt.Key_Up) ? -1 : 1
+              if (event.modifiers & Qt.AltModifier) {
+                var from = (root.selectedLine >= 0) ? root.selectedLine : root.pendingLineIndex
+                if (from >= 0) {
+                  var moved = root.moveTaskLine(from, dir)
+                  if (moved >= 0) {
+                    root.clearPendingCursor()
+                    root.selectedLine = moved
+                  }
                 }
+              } else {
+                root.selectTaskRelative(dir)
               }
+              return
+            }
+            if (event.key === Qt.Key_Space && root.activeTab === "tasks" && root.selectedLine >= 0) {
+              event.accepted = true
+              root.toggleTaskAtLine(root.selectedLine)
+              root.selectedLine = -1   // row relocates between sections; drop stale index
               return
             }
             if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_E) {
@@ -2185,7 +2204,6 @@ BarWidget {
             clip: true
             boundsBehavior: Flickable.StopAtBounds
             flickableDirection: Flickable.VerticalFlick
-            interactive: !root.dragActive
 
             ScrollBar.vertical: ScrollBar {
               id: previewScrollBar
@@ -2216,98 +2234,6 @@ BarWidget {
               id: previewColumnContainer
               width: previewFlickable.width - Style.space(8)
               implicitHeight: previewColumn.implicitHeight + (root.pendingAfterLast && root.activeTab === "tasks" ? Style.space(32) : 0) + Style.space(80)
-
-              function findDropTarget(containerY) {
-                var activeCount = activeRepeater ? activeRepeater.count : 0
-                if (activeCount > 0) {
-                  var firstActive = activeRepeater.itemAt(0)
-                  if (firstActive) {
-                    var fY = firstActive.mapToItem(previewColumnContainer, 0, 0).y
-                    if (containerY <= fY + firstActive.height / 2) {
-                      var firstData = (root.activeTab === "tasks") ? root.activeItems[0] : root.parsedItems[0]
-                      return {
-                        index: 0,
-                        lineIndex: firstData ? firstData.lineIndex : 0,
-                        dropBefore: true
-                      }
-                    }
-                  }
-
-                  for (var i = 0; i < activeCount; i++) {
-                    var child = activeRepeater.itemAt(i)
-                    if (child) {
-                      var cY = child.mapToItem(previewColumnContainer, 0, 0).y
-                      var cH = child.height
-                      var nextChild = (i + 1 < activeCount) ? activeRepeater.itemAt(i + 1) : null
-                      var bottomBound = nextChild ? nextChild.mapToItem(previewColumnContainer, 0, 0).y : (cY + cH + Style.space(12))
-                      if (containerY >= cY && containerY < bottomBound) {
-                        var itmData = (root.activeTab === "tasks") ? root.activeItems[i] : root.parsedItems[i]
-                        return {
-                          index: i,
-                          lineIndex: itmData ? itmData.lineIndex : -1,
-                          dropBefore: containerY < (cY + cH / 2)
-                        }
-                      }
-                    }
-                  }
-                }
-
-                if (root.activeTab === "tasks" && root.completedItems && root.completedItems.length > 0 && completedRepeater) {
-                  var compCount = completedRepeater.count
-                  if (compCount > 0) {
-                    var firstComp = completedRepeater.itemAt(0)
-                    if (firstComp) {
-                      var fcY = firstComp.mapToItem(previewColumnContainer, 0, 0).y
-                      if (containerY < fcY) {
-                        return {
-                          index: 0,
-                          lineIndex: root.completedItems[0].lineIndex,
-                          dropBefore: true
-                        }
-                      }
-                    }
-                  }
-
-                  for (var j = 0; j < compCount; j++) {
-                    var cChild = completedRepeater.itemAt(j)
-                    if (cChild) {
-                      var ccY = cChild.mapToItem(previewColumnContainer, 0, 0).y
-                      var ccH = cChild.height
-                      var nextCChild = (j + 1 < compCount) ? completedRepeater.itemAt(j + 1) : null
-                      var cBottomBound = nextCChild ? nextCChild.mapToItem(previewColumnContainer, 0, 0).y : (ccY + ccH + Style.space(12))
-                      if (containerY >= ccY && containerY < cBottomBound) {
-                        var cData = root.completedItems[j]
-                        return {
-                          index: j,
-                          lineIndex: cData ? cData.lineIndex : -1,
-                          dropBefore: containerY < (ccY + ccH / 2)
-                        }
-                      }
-                    }
-                  }
-
-                  if (compCount > 0) {
-                    var lastComp = root.completedItems[compCount - 1]
-                    return {
-                      index: compCount - 1,
-                      lineIndex: lastComp ? lastComp.lineIndex : -1,
-                      dropBefore: false
-                    }
-                  }
-                }
-
-                if (activeCount > 0) {
-                  var lastActiveData = (root.activeTab === "tasks") ? root.activeItems[activeCount - 1] : root.parsedItems[activeCount - 1]
-                  return {
-                    index: activeCount - 1,
-                    lineIndex: lastActiveData ? lastActiveData.lineIndex : -1,
-                    dropBefore: false
-                  }
-                }
-
-                return null
-              }
-
               Column {
                 id: previewColumn
                 width: parent.width
@@ -2406,52 +2332,34 @@ BarWidget {
                     required property var modelData
                     width: previewColumn.width
                     implicitHeight: loader.implicitHeight
-                    opacity: root.dragActive && root.draggedLineIndex === modelData.lineIndex ? 0.25 : 1.0
-                    Behavior on opacity { NumberAnimation { duration: 150 } }
 
-                    // Drop indicator line (Top)
+                    // Keyboard selection (Up/Down select, Alt+Up/Down move, Space toggle)
+                    readonly property bool isSelected: modelData.itemType === "task" && root.selectedLine === modelData.lineIndex && root.editingLineIndex !== modelData.lineIndex
+
                     Rectangle {
-                      anchors.top: parent.top
-                      anchors.topMargin: -Style.space(3)
-                      anchors.left: parent.left
-                      anchors.right: parent.right
-                      height: 2
-                      radius: 1
-                      color: Commons.Color.accent
-                      visible: root.dragActive && root.dropTargetLineIndex === modelData.lineIndex && root.dropBefore && root.draggedLineIndex !== modelData.lineIndex
-                      z: 100
-
-                      Rectangle {
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: Style.space(6)
-                        height: Style.space(6)
-                        radius: Style.space(3)
-                        color: Commons.Color.accent
-                      }
+                      anchors.fill: parent
+                      anchors.margins: -Style.space(3)
+                      radius: Style.cornerRadius
+                      visible: delegateItem.isSelected
+                      color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.12)
+                      border.color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.55)
+                      border.width: 1
                     }
 
-                    // Drop indicator line (Bottom)
-                    Rectangle {
-                      anchors.bottom: parent.bottom
-                      anchors.bottomMargin: -Style.space(3)
-                      anchors.left: parent.left
-                      anchors.right: parent.right
-                      height: 2
-                      radius: 1
-                      color: Commons.Color.accent
-                      visible: root.dragActive && root.dropTargetLineIndex === modelData.lineIndex && !root.dropBefore && root.draggedLineIndex !== modelData.lineIndex
-                      z: 100
-
-                      Rectangle {
-                        anchors.left: parent.left
-                        anchors.verticalCenter: parent.verticalCenter
-                        width: Style.space(6)
-                        height: Style.space(6)
-                        radius: Style.space(3)
-                        color: Commons.Color.accent
+                    function reveal() {
+                      var top = delegateItem.mapToItem(previewFlickable.contentItem, 0, 0).y
+                      var bottom = top + delegateItem.height
+                      var pad = Style.space(8)
+                      if (top - pad < previewFlickable.contentY) {
+                        previewFlickable.contentY = Math.max(0, top - pad)
+                      } else if (bottom + pad > previewFlickable.contentY + previewFlickable.height) {
+                        previewFlickable.contentY = Math.min(
+                          Math.max(0, previewFlickable.contentHeight - previewFlickable.height),
+                          bottom + pad - previewFlickable.height)
                       }
                     }
+                    onIsSelectedChanged: if (isSelected) Qt.callLater(reveal)
+                    Component.onCompleted: if (isSelected) Qt.callLater(reveal)
 
                     Loader {
                       id: loader
@@ -2471,7 +2379,7 @@ BarWidget {
                       }
                     }
 
-                    // 1. Interactive Checkbox Task (Todoist-style 6-dot drag handle, checkbox, inline editable text & timestamp)
+                    // 1. Interactive Checkbox Task (checkbox, inline editable text & timestamp)
                     Component {
                       id: taskPreviewDelegate
 
@@ -2483,146 +2391,10 @@ BarWidget {
 
                         readonly property bool isEditingThisTask: root.editingLineIndex === modelData.lineIndex
 
-                        HoverHandler {
-                          id: rowHover
-                        }
-
                         Item {
                           width: modelData.indent * Style.space(12)
                           height: 1
                           visible: modelData.indent > 0
-                        }
-
-                        // Todoist-style 6-dot vertical grab handle
-                        Item {
-                          id: dragHandle
-                          Layout.alignment: Qt.AlignTop
-                          Layout.topMargin: Style.space(2)
-                          width: Style.space(12)
-                          height: Style.space(16)
-                          opacity: taskRowLayout.isEditingThisTask ? 0.2 : (rowHover.hovered || dragMouseArea.pressed ? 0.9 : 0.2)
-                          Behavior on opacity { NumberAnimation { duration: 150 } }
-
-                          Grid {
-                            anchors.centerIn: parent
-                            columns: 2
-                            rowSpacing: Style.space(2)
-                            columnSpacing: Style.space(2)
-
-                            Repeater {
-                              model: 6
-                              Rectangle {
-                                width: Style.space(2)
-                                height: Style.space(2)
-                                radius: Style.space(1)
-                                color: dragMouseArea.pressed ? Commons.Color.accent : Commons.Color.foreground
-                              }
-                            }
-                          }
-
-                          MouseArea {
-                            id: dragMouseArea
-                            anchors.fill: parent
-                            anchors.margins: -Style.space(4)
-                            hoverEnabled: true
-                            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
-                            preventStealing: true
-
-                            property real startPressY: 0
-                            property bool isDragging: false
-
-                            onPressed: function(mouse) {
-                              if (root.editingLineIndex >= 0) {
-                                root.commitCurrentEditingTask(false)
-                              }
-                              startPressY = mouse.y
-                              isDragging = false
-                              root.draggedLineIndex = modelData.lineIndex
-                              root.draggedItemIndex = index
-                              root.draggedContent = (modelData.cleanContent !== undefined && modelData.cleanContent.length > 0) ? modelData.cleanContent : modelData.content
-                              root.draggedChecked = modelData.checked
-                              root.draggedDueDate = modelData.dueDate || ""
-                              root.dropTargetIndex = index
-                              root.dropTargetLineIndex = modelData.lineIndex
-                              root.dropBefore = true
-
-                              var ptInCard = dragMouseArea.mapToItem(cardContent, mouse.x, mouse.y)
-                              root.dragGhostY = ptInCard.y - Style.space(17)
-                            }
-
-                            onPositionChanged: function(mouse) {
-                              if (!pressed) return
-
-                              if (!isDragging) {
-                                if (Math.abs(mouse.y - startPressY) >= Style.space(3) || Math.abs(mouse.x) >= Style.space(3)) {
-                                  isDragging = true
-                                  root.dragActive = true
-                                  previewFlickable.interactive = false
-                                } else {
-                                  return
-                                }
-                              }
-
-                              var ptInCard = dragMouseArea.mapToItem(cardContent, mouse.x, mouse.y)
-                              root.dragGhostY = ptInCard.y - Style.space(17)
-
-                              // Auto-scroll Flickable
-                              var ptInFlickable = dragMouseArea.mapToItem(previewFlickable, mouse.x, mouse.y)
-                              var scrollZone = Style.space(40)
-                              if (ptInFlickable.y < scrollZone) {
-                                previewFlickable.contentY = Math.max(0, previewFlickable.contentY - Style.space(12))
-                              } else if (ptInFlickable.y > previewFlickable.height - scrollZone) {
-                                var maxScroll = Math.max(0, previewFlickable.contentHeight - previewFlickable.height)
-                                previewFlickable.contentY = Math.min(maxScroll, previewFlickable.contentY + Style.space(12))
-                              }
-
-                              // Calculate drop slot
-                              var ptInContainer = dragMouseArea.mapToItem(previewColumnContainer, mouse.x, mouse.y)
-                              var targetInfo = previewColumnContainer.findDropTarget(ptInContainer.y)
-                              if (targetInfo) {
-                                if (targetInfo.index !== undefined && targetInfo.index !== null) {
-                                  root.dropTargetIndex = targetInfo.index
-                                }
-                                if (targetInfo.lineIndex !== undefined && targetInfo.lineIndex !== null) {
-                                  root.dropTargetLineIndex = targetInfo.lineIndex
-                                }
-                                root.dropBefore = !!targetInfo.dropBefore
-                              }
-                            }
-
-                            onReleased: function(mouse) {
-                              var wasDragging = isDragging && root.dragActive
-                              var fromLine = root.draggedLineIndex
-                              var targetLine = root.dropTargetLineIndex
-                              var dropBefore = root.dropBefore
-
-                              // 1. Immediately dismiss all drag state on root before model mutation
-                              isDragging = false
-                              root.dragActive = false
-                              previewFlickable.interactive = true
-                              root.draggedItemIndex = -1
-                              root.draggedLineIndex = -1
-                              root.dropTargetIndex = -1
-                              root.dropTargetLineIndex = -1
-
-                              // 2. Commit drop asynchronously so delegate destruction cannot interrupt state cleanup
-                              if (wasDragging && fromLine >= 0 && targetLine >= 0) {
-                                Qt.callLater(function() {
-                                  root.applyTaskDrop(fromLine, targetLine, dropBefore)
-                                })
-                              }
-                            }
-
-                            onCanceled: {
-                              isDragging = false
-                              root.dragActive = false
-                              previewFlickable.interactive = true
-                              root.draggedItemIndex = -1
-                              root.draggedLineIndex = -1
-                              root.dropTargetIndex = -1
-                              root.dropTargetLineIndex = -1
-                            }
-                          }
                         }
 
                         // Checkbox
@@ -2786,17 +2558,11 @@ BarWidget {
                                   var oldPos = cursorPosition
                                   root.activeEditingText = inlineInput.text
                                   root.commitCurrentEditingTask(false)
-                                  var lines = tasksText.split("\n")
-                                  var targetIdx = curLine + dir
-                                  while (targetIdx >= 0 && targetIdx < lines.length && lines[targetIdx].trim() === "") {
-                                    targetIdx += dir
-                                  }
-                                  if (targetIdx >= 0 && targetIdx < lines.length && !lines[targetIdx].trim().startsWith("#")) {
-                                    if (root.moveTaskLine(curLine, dir)) {
-                                      root.pendingCharOffset = oldPos
-                                      root.editingLineIndex = targetIdx
-                                      root.requestTaskFocus(targetIdx)
-                                    }
+                                  var movedTo = root.moveTaskLine(curLine, dir)
+                                  if (movedTo >= 0) {
+                                    root.pendingCharOffset = oldPos
+                                    root.editingLineIndex = movedTo
+                                    root.requestTaskFocus(movedTo)
                                   }
                                   return
                                 }
@@ -3401,111 +3167,6 @@ BarWidget {
                   }
                 }
                 onDoubleClicked: root.toggleViewMode(true)
-              }
-            }
-          }
-        }
-
-        // Floating Drag Proxy Card (Detached from flickable, elevated across entire panel at z: 99999)
-        Rectangle {
-          id: floatingDragProxy
-          visible: root.dragActive
-          x: Style.space(12)
-          y: Math.max(headerRow.height + Style.space(4), Math.min(cardContent.height - footerRow.height - Style.space(38), root.dragGhostY))
-          width: cardContent.width - Style.space(24)
-          height: Style.space(34)
-          z: 99999
-          radius: Style.cornerRadius
-          color: Qt.rgba(Commons.Color.background.r, Commons.Color.background.g, Commons.Color.background.b, 0.95)
-          border.color: Commons.Color.accent
-          border.width: 1.5
-          scale: 1.02
-
-          Rectangle {
-            anchors.fill: parent
-            anchors.margins: -1
-            radius: Style.cornerRadius + 1
-            color: "transparent"
-            border.color: Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.3)
-            border.width: 1
-            z: -1
-          }
-
-          RowLayout {
-            anchors.fill: parent
-            anchors.leftMargin: Style.space(8)
-            anchors.rightMargin: Style.space(8)
-            spacing: Style.space(6)
-
-            Grid {
-              Layout.alignment: Qt.AlignVCenter
-              columns: 2
-              rowSpacing: Style.space(2)
-              columnSpacing: Style.space(2)
-              Repeater {
-                model: 6
-                Rectangle {
-                  width: Style.space(2)
-                  height: Style.space(2)
-                  radius: Style.space(1)
-                  color: Commons.Color.accent
-                }
-              }
-            }
-
-            Rectangle {
-              Layout.alignment: Qt.AlignVCenter
-              width: Style.space(16)
-              height: Style.space(16)
-              radius: Style.space(3)
-              color: root.draggedChecked ? Commons.Color.accent : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.08)
-              border.color: Commons.Color.accent
-              border.width: 1
-
-              Text {
-                anchors.centerIn: parent
-                text: "✓"
-                visible: root.draggedChecked
-                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                font.pixelSize: Style.font.caption - 1
-                font.bold: true
-                color: Commons.Color.background
-                textFormat: Text.PlainText
-              }
-            }
-
-            Text {
-              text: root.draggedContent
-              font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-              font.features: ({ "calt": 1, "liga": 1 })
-              font.pixelSize: Style.font.body
-              font.strikeout: root.draggedChecked
-              color: root.draggedChecked
-                ? Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.45)
-                : Commons.Color.foreground
-              elide: Text.ElideRight
-              Layout.fillWidth: true
-              textFormat: Text.PlainText
-            }
-
-            RowLayout {
-              visible: root.draggedDueDate.length > 0
-              spacing: Style.space(4)
-
-              Text {
-                text: "\uf073"
-                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                font.pixelSize: Style.font.caption - 2
-                color: Commons.Color.accent
-                textFormat: Text.PlainText
-              }
-
-              Text {
-                text: root.draggedDueDate.length > 2 ? root.draggedDueDate.slice(1, -1) : ""
-                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                font.pixelSize: Style.font.caption - 2
-                color: Commons.Color.accent
-                textFormat: Text.PlainText
               }
             }
           }

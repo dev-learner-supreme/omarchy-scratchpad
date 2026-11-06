@@ -1,54 +1,92 @@
 #!/usr/bin/env python3
+"""Atomic note writer. Usage: save.py <name>   (content on stdin, never argv).
+
+Writes <state>/omarchy/scratchpad/<name>[.md] via unique temp file + fsync + rename.
+For notes (tasks, scratchpad) keeps rolling backups in backups/ so a clear or bad
+save is recoverable.
+"""
 import os
 import sys
+import tempfile
+import time
 from pathlib import Path
 
-def sync_write(target_path: Path, content: str):
-    """Write content to target_path atomically and flush to physical storage via fsync."""
-    tmp = target_path.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-        f.flush()
-        os.fsync(f.fileno())
+NOTES = ("tasks", "scratchpad")
+BACKUP_KEEP = 30          # per note
+BACKUP_MIN_GAP_S = 120    # snapshot at most this often unless content is shrinking hard
 
-    tmp.replace(target_path)
 
-    # Sync parent directory to persist directory entry metadata on journaling filesystems
+def state_dir() -> Path:
+    base = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(base) / "omarchy" / "scratchpad"
+
+
+def sync_write(target: Path, content: str) -> None:
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=target.name + ".", suffix=".tmp")
     try:
-        dir_fd = os.open(target_path.parent, os.O_DIRECTORY)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, target)
+    except BaseException:
         try:
-            os.fsync(dir_fd)
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    try:
+        dfd = os.open(target.parent, os.O_DIRECTORY)
+        try:
+            os.fsync(dfd)
         finally:
-            os.close(dir_fd)
-    except Exception:
+            os.close(dfd)
+    except OSError:
         pass
 
-def main():
-    state_dir = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")) / "omarchy" / "scratchpad"
-    state_dir.mkdir(parents=True, exist_ok=True)
 
-    if len(sys.argv) > 2:
-        note_name = sys.argv[1]
-        content = sys.argv[2]
-    elif len(sys.argv) == 2:
-        note_name = sys.argv[1]
-        content = sys.stdin.read()
-    else:
-        note_name = "scratchpad"
-        content = sys.stdin.read()
+def backup(target: Path, base: str, new_content: str) -> None:
+    """Snapshot the file about to be replaced."""
+    try:
+        old = target.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if not old.strip() or old == new_content:
+        return
+    bdir = target.parent / "backups"
+    bdir.mkdir(exist_ok=True)
+    existing = sorted(bdir.glob(f"{base}.*.md"))
+    shrinking = len(new_content) < len(old) * 0.5
+    if existing and not shrinking:
+        if time.time() - existing[-1].stat().st_mtime < BACKUP_MIN_GAP_S:
+            return
+    stamp = time.strftime("%Y%m%d-%H%M%S") + f"{int(time.time() * 1000) % 1000:03d}"
+    sync_write(bdir / f"{base}.{stamp}.md", old)
+    existing = sorted(bdir.glob(f"{base}.*.md"))
+    for stale in existing[:-BACKUP_KEEP]:
+        try:
+            stale.unlink()
+        except OSError:
+            pass
 
-    if not note_name.endswith(".md") and not note_name.endswith(".txt") and not note_name.endswith(".json"):
-        filename = f"{note_name}.md"
-    else:
-        filename = note_name
 
-    target = state_dir / filename
+def main() -> int:
+    if len(sys.argv) != 2:
+        print("usage: save.py <name>  (content on stdin)", file=sys.stderr)
+        return 2
+    name = os.path.basename(sys.argv[1])  # no path traversal
+    base, ext = os.path.splitext(name)
+    if ext not in (".md", ".txt", ".json"):
+        base, name = name, name + ".md"
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    content = sys.stdin.read()
+    target = d / name
+    if base in NOTES and name.endswith(".md"):
+        backup(target, base, content)
     sync_write(target, content)
+    return 0
 
-    # Also record active tab if saving one of the standard tabs
-    base = filename.replace(".md", "").replace(".txt", "").replace(".json", "")
-    if base in ("tasks", "scratchpad"):
-        sync_write(state_dir / "active_tab.txt", base)
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

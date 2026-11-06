@@ -7,7 +7,7 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 ## Features
 
 ### 1. Interactive Tasks & Checklists
-* **Todoist-Style Grab Handles:** 6-dot vertical drag handles with detached floating drag ghosts and real-time slot indicators for reordering tasks.
+* **Keyboard Reordering:** `Up/Down` selects a task (highlighted, auto-scrolled into view), `Alt+Up/Down` moves it, `Space` toggles it. Rapid moves are coalesced into a single write.
 * **Auto-Categorization:** Checking off a task automatically transitions it to the `### Completed` section with strikeout formatting. Unchecking a completed task moves it back into active tasks.
 * **Inline Task Editing:** Click anywhere on a task description or timestamp to edit in place with multi-line text wrapping.
 * **Rapid Task Entry:** Press `Enter` to commit the active task and immediately spawn the next item. Press `Escape` or `Backspace` on an empty task to dismiss.
@@ -16,7 +16,7 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 
 ### 2. Typora-Style Scratchpad
 * **Live Markdown Rendering:** Renders headers, lists, code blocks, blockquotes, and formatting live in preview mode.
-* **Seamless Edit/Preview Shift:** Tap anywhere on the preview canvas to place a cursor. Typing immediately activates inline edit mode. Pausing typing for 3 seconds automatically shifts back to rendered preview.
+* **Preview First:** The Scratchpad tab opens in read-only preview. `Ctrl+E` or the Edit button enters editing; `Ctrl+S` or Save writes and returns to preview. Tasks edit inline and shift back to preview after 3 seconds idle.
 * **Decoupled Tabs:** Dedicated storage buffers for `Tasks` (`tasks.md`) and freeform `Scratchpad` (`scratchpad.md`), preserving independent view modes and last-opened state across restarts.
 
 ### 3. Native Due Dates & Reminders
@@ -26,7 +26,9 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 
 ### 4. Hardware Harmony & Performance
 * **Minimal Footprint:** Consumes ~4-6 MB resident memory in Quickshell with 0.0% idle CPU overhead.
-* **Atomic Persistence:** Non-blocking atomic writes via `save.py` with durable `fsync` protection.
+* **Atomic Persistence:** Content is piped to `save.py` over stdin (no argv size limit), writes are serialized through a single queue, use a unique temp file plus `fsync` and rename, and the file watcher ignores reloads while local changes are unsaved.
+* **Rolling Backups:** Up to 30 snapshots per note in `backups/`, taken at most every 2 minutes, or immediately when a save shrinks a note by more than half (e.g. Clear). Restore by copying a snapshot over `tasks.md` or `scratchpad.md`.
+* **Reminders:** Due tasks notify once, up to 6 hours late (covers shell restarts); dedupe entries expire after 30 days.
 
 ---
 
@@ -58,7 +60,9 @@ omarchy restart shell
 | `Ctrl + E` | Toggle between Edit and Preview modes |
 | `Ctrl + D` | Insert current timestamp `[YY-MM-DD HH:MM]` at cursor |
 | `Ctrl + Shift + K` | Sweep and permanently purge completed tasks |
-| `Alt + Up / Down` | Move current line up or down |
+| `Up / Down` | Select previous / next task (Tasks, preview) |
+| `Alt + Up / Down` | Move selected task (or current line while editing) up or down |
+| `Space` | Toggle the selected task |
 | `Tab / Shift + Tab` | Indent / unindent line |
 | `Esc` | Close panel or cancel active task edit |
 
@@ -73,6 +77,7 @@ All user notes and state persist under standard XDG state paths:
 * `~/.local/state/omarchy/scratchpad/active_tab.txt` - Remembers last open tab
 * `~/.local/state/omarchy/scratchpad/tasks_view.txt` - Remembers Tasks view mode
 * `~/.local/state/omarchy/scratchpad/scratchpad_view.txt` - Remembers Scratchpad view mode
+* `~/.local/state/omarchy/scratchpad/backups/` - Rolling snapshots
 
 ---
 
