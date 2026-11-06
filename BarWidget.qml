@@ -176,10 +176,6 @@ BarWidget {
     }
   }
 
-  function persistViewMode(tab, mode) {
-    enqueueSave((tab === "tasks") ? "tasks_view.txt" : "scratchpad_view.txt", mode)
-  }
-
   function pad2(n) {
     return (n < 10 ? "0" : "") + n
   }
@@ -658,9 +654,7 @@ BarWidget {
     scratchpadFile.reload()
     var targetTxt = (activeTab === "tasks") ? tasksText : scratchpadText
     syncActiveTabContent(targetTxt)
-    if (activeTab === "scratchpad") {
-      scratchpadViewMode = "preview"
-    }
+    scratchpadViewMode = "preview"   // always reopen in preview
     Qt.callLater(function() {
       if (panel.loadedContent) {
         if (root.viewMode === "preview") {
@@ -704,7 +698,6 @@ BarWidget {
     root.activeEditingText = ""
     // Persist active tab and view modes
     enqueueSave("active_tab.txt", root.activeTab)
-    persistViewMode("scratchpad", scratchpadViewMode)
     panel.open = false
   }
 
@@ -771,13 +764,11 @@ BarWidget {
       saveNow()
       refreshParsedItems()
       scratchpadViewMode = "preview"
-      persistViewMode("scratchpad", "preview")
       Qt.callLater(function() {
         if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
       })
     } else {
       scratchpadViewMode = "edit"
-      persistViewMode("scratchpad", "edit")
       Qt.callLater(function() {
         if (panel.loadedContent && panel.loadedContent.editor) {
           panel.loadedContent.editor.forceActiveFocus()
@@ -799,7 +790,6 @@ BarWidget {
     saveNow()
     refreshParsedItems()
     scratchpadViewMode = "preview"
-    persistViewMode("scratchpad", "preview")
     Qt.callLater(function() {
       if (panel.loadedContent) {
         panel.loadedContent.forceActiveFocus()
@@ -809,7 +799,6 @@ BarWidget {
 
   function switchToEditMode() {
     scratchpadViewMode = "edit"
-    persistViewMode("scratchpad", "edit")
     Qt.callLater(function() {
       if (panel.loadedContent && panel.loadedContent.editor) {
         panel.loadedContent.editor.forceActiveFocus()
@@ -823,7 +812,6 @@ BarWidget {
     var targetCursor = pendingCursorPos
     clearPendingCursor()
     scratchpadViewMode = "edit"
-    persistViewMode("scratchpad", "edit")
 
     Qt.callLater(function() {
       if (panel.loadedContent && panel.loadedContent.editor) {
@@ -1532,18 +1520,6 @@ BarWidget {
         if (targetText) {
           root.syncActiveTabContent(targetText)
         }
-      }
-    }
-  }
-
-  FileView {
-    id: scratchpadViewFile
-    path: root.storageDir + "/scratchpad_view.txt"
-    printErrors: false
-    onLoaded: {
-      var v = text().trim()
-      if (v === "preview" || v === "edit") {
-        root.scratchpadViewMode = v
       }
     }
   }

@@ -76,7 +76,6 @@ All user notes and state persist under standard XDG state paths:
 * `~/.local/state/omarchy/scratchpad/tasks.md` - Active and completed markdown tasks
 * `~/.local/state/omarchy/scratchpad/scratchpad.md` - Freeform markdown notes
 * `~/.local/state/omarchy/scratchpad/active_tab.txt` - Remembers last open tab
-* `~/.local/state/omarchy/scratchpad/scratchpad_view.txt` - Remembers Scratchpad view mode
 * `~/.local/state/omarchy/scratchpad/backups/` - Rolling snapshots
 
 ---
