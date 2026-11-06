@@ -1955,8 +1955,7 @@ BarWidget {
           // Right: Status indicator (Saved)
           Text {
             id: statusText
-            anchors.right: (root.activeTab === "scratchpad") ? ((root.scratchpadViewMode === "edit") ? saveFooterButton.left : editFooterButton.left) : parent.right
-            anchors.rightMargin: (root.activeTab === "scratchpad") ? Style.space(8) : 0
+            anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             text: root.statusMessage
             font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
@@ -1964,92 +1963,6 @@ BarWidget {
             font.bold: true
             color: Commons.Color.accent
             textFormat: Text.PlainText
-          }
-
-          // Manual Save Button (Scratchpad Edit Mode)
-          Rectangle {
-            id: saveFooterButton
-            visible: root.activeTab === "scratchpad" && root.scratchpadViewMode === "edit"
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            height: Style.space(20)
-            width: saveFooterRow.implicitWidth + Style.space(16)
-            radius: Style.space(4)
-            color: saveFooterHover.containsMouse ? Commons.Color.accent : Qt.rgba(Commons.Color.accent.r, Commons.Color.accent.g, Commons.Color.accent.b, 0.18)
-            border.width: 1
-            border.color: Commons.Color.accent
-
-            RowLayout {
-              id: saveFooterRow
-              anchors.centerIn: parent
-              spacing: Style.space(4)
-
-              Text {
-                text: "\uf0c7"
-                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                font.pixelSize: Style.font.caption - 1
-                color: saveFooterHover.containsMouse ? Commons.Color.background : Commons.Color.accent
-              }
-
-              Text {
-                text: "Save"
-                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                font.pixelSize: Style.font.caption - 1
-                font.bold: true
-                color: saveFooterHover.containsMouse ? Commons.Color.background : Commons.Color.accent
-              }
-            }
-
-            MouseArea {
-              id: saveFooterHover
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.saveAndSwitchToPreview()
-            }
-          }
-
-          // Manual Edit Button (Scratchpad Preview Mode)
-          Rectangle {
-            id: editFooterButton
-            visible: root.activeTab === "scratchpad" && root.scratchpadViewMode === "preview"
-            anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            height: Style.space(20)
-            width: editFooterRow.implicitWidth + Style.space(16)
-            radius: Style.space(4)
-            color: editFooterHover.containsMouse ? Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.15) : Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.08)
-            border.width: 1
-            border.color: Qt.rgba(Commons.Color.foreground.r, Commons.Color.foreground.g, Commons.Color.foreground.b, 0.2)
-
-            RowLayout {
-              id: editFooterRow
-              anchors.centerIn: parent
-              spacing: Style.space(4)
-
-              Text {
-                text: "\uf044"
-                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                font.pixelSize: Style.font.caption - 1
-                color: Commons.Color.foreground
-              }
-
-              Text {
-                text: "Edit"
-                font.family: root.bar ? root.bar.fontFamily : Style.fontFamily
-                font.pixelSize: Style.font.caption - 1
-                font.bold: true
-                color: Commons.Color.foreground
-              }
-            }
-
-            MouseArea {
-              id: editFooterHover
-              anchors.fill: parent
-              hoverEnabled: true
-              cursorShape: Qt.PointingHandCursor
-              onClicked: root.switchToEditMode()
-            }
           }
         }
 
@@ -2142,6 +2055,9 @@ BarWidget {
               }
 
               Keys.onReturnPressed: function(event) {
+                // Key-specific handlers consume the event by default; only list-continuation
+                // cases in handleReturn accept it, otherwise let TextEdit insert the newline.
+                event.accepted = false
                 root.handleReturn(scratchEdit, event)
               }
 

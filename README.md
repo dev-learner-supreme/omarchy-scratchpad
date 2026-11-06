@@ -16,7 +16,7 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 
 ### 2. Typora-Style Scratchpad
 * **Live Markdown Rendering:** Renders headers, lists, code blocks, blockquotes, and formatting live in preview mode.
-* **Preview First:** The Scratchpad tab opens in read-only preview. `Ctrl+E` or the Edit button enters editing; `Ctrl+S` or Save writes and returns to preview. Tasks edit inline and shift back to preview after 3 seconds idle.
+* **Preview First:** The Scratchpad tab opens in read-only preview. The eye/pencil icon in the header or `Ctrl+E` toggles editing. Edits autosave 350 ms after you stop typing; `Ctrl+S` saves immediately and returns to preview. Tasks edit inline and shift back to preview after 3 seconds idle.
 * **Decoupled Tabs:** Dedicated storage buffers for `Tasks` (`tasks.md`) and freeform `Scratchpad` (`scratchpad.md`), preserving independent view modes and last-opened state across restarts.
 
 ### 3. Native Due Dates & Reminders
