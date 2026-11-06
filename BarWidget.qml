@@ -1803,6 +1803,11 @@ BarWidget {
               root.toggleViewMode(true)
               return
             }
+            if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_O) {
+              event.accepted = true
+              root.openInEditor()
+              return
+            }
             if ((event.modifiers & Qt.ControlModifier) && (event.key === Qt.Key_Return || event.key === Qt.Key_Enter)) {
               event.accepted = true
               root.shiftToEditAndType(Qt.Key_Return, "")
@@ -1891,15 +1896,6 @@ BarWidget {
             RowLayout {
               spacing: Style.space(2)
 
-              // Delete Completed Tasks (Ctrl+Shift+K) - Tasks tab only
-              PanelActionButton {
-                visible: root.activeTab === "tasks"
-                iconText: "\uf2ed"
-                hoverColor: Commons.Color.urgent
-                tooltipText: "Delete Completed Tasks (Ctrl+Shift+K)"
-                onClicked: root.sweepCompletedTasks()
-              }
-
               // Toggle Edit / Preview Mode (Ctrl+E)
               PanelActionButton {
                 iconText: (root.viewMode === "preview") ? "\uf044" : "\uf06e"
@@ -1912,13 +1908,6 @@ BarWidget {
                 iconText: "\uf0c5"
                 tooltipText: strings.t("scratchpad.copy")
                 onClicked: root.copyAll()
-              }
-
-              // Open in external editor
-              PanelActionButton {
-                iconText: "\uf08e"
-                tooltipText: strings.t("scratchpad.openEditor")
-                onClicked: root.openInEditor()
               }
             }
           }
@@ -2197,6 +2186,11 @@ BarWidget {
                 if ((event.modifiers & Qt.AltModifier) && (event.key === Qt.Key_Up || event.key === Qt.Key_Down)) {
                   event.accepted = true
                   root.moveCurrentLine(scratchEdit, (event.key === Qt.Key_Up) ? -1 : 1)
+                  return
+                }
+                if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_O) {
+                  event.accepted = true
+                  root.openInEditor()
                   return
                 }
                 if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_E) {
@@ -2782,6 +2776,18 @@ BarWidget {
                               PropertyAnimation { to: 0.1; duration: 500 }
                               PropertyAnimation { to: 1.0; duration: 500 }
                             }
+                          }
+
+                          // Clear all completed tasks (Ctrl+Shift+K)
+                          PanelActionButton {
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            z: 10
+                            visible: root.activeTab === "tasks" && root.completedItems.length > 0 && /^completed$/i.test((modelData.content || "").trim())
+                            iconText: "\uf1f8"
+                            hoverColor: Commons.Color.urgent
+                            tooltipText: "Clear completed (Ctrl+Shift+K)"
+                            onClicked: root.sweepCompletedTasks()
                           }
 
                           MouseArea {

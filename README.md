@@ -12,7 +12,7 @@ A high-performance Markdown Scratchpad and interactive Todoist-style Task Manage
 * **Inline Task Editing:** Click anywhere on a task description or timestamp to edit in place with multi-line text wrapping.
 * **Rapid Task Entry:** Press `Enter` to commit the active task and immediately spawn the next item. Press `Escape` or `Backspace` on an empty task to dismiss.
 * **Template Defaulting:** Adding a new task without typing text preserves `"New task"` rather than discarding the entry.
-* **Permanent Sweep:** Dedicated trash action to purge completed items from storage permanently.
+* **Clear Completed:** Trash icon beside the Completed heading purges completed items permanently (backups keep a snapshot).
 
 ### 2. Typora-Style Scratchpad
 * **Live Markdown Rendering:** Renders headers, lists, code blocks, blockquotes, and formatting live in preview mode.
@@ -59,7 +59,8 @@ omarchy restart shell
 | `Ctrl + 2` | Switch to Scratchpad tab |
 | `Ctrl + E` | Toggle between Edit and Preview modes |
 | `Ctrl + D` | Insert current timestamp `[YY-MM-DD HH:MM]` at cursor |
-| `Ctrl + Shift + K` | Sweep and permanently purge completed tasks |
+| `Ctrl + Shift + K` | Clear completed tasks (also the trash icon beside the Completed heading) |
+| `Ctrl + O` | Open the current note in the external editor (also right-click on the bar icon) |
 | `Up / Down` | Select previous / next task (Tasks, preview) |
 | `Alt + Up / Down` | Move selected task (or current line while editing) up or down |
 | `Space` | Toggle the selected task |
