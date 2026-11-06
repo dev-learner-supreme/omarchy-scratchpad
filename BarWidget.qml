@@ -30,7 +30,7 @@ BarWidget {
   readonly property bool autoShiftEnabled: true
 
   property int editingLineIndex: -1
-  onEditingLineIndexChanged: if (editingLineIndex >= 0 && editingLineIndex !== selectedLine) selectedLine = -1
+  onEditingLineIndexChanged: if (editingLineIndex >= 0) selectedLine = editingLineIndex   // editing a row selects it
   property int selectedLine: -1   // keyboard-selected task row in preview (Up/Down select, Alt+Up/Down move)
   property string activeEditingText: ""
   property int completedHeaderLineIndex: -1
@@ -308,6 +308,7 @@ BarWidget {
   }
 
   function deleteTaskAtLine(lineIdx) {
+    root.selectedLine = -1
     var lines = tasksText.split("\n")
     if (lineIdx < 0 || lineIdx >= lines.length) return
     lines.splice(lineIdx, 1)
@@ -2100,6 +2101,7 @@ BarWidget {
 
             TapHandler {
               onTapped: {
+                root.selectedLine = -1   // tap on empty space deselects
                 if (root.editingLineIndex >= 0) {
                   root.commitCurrentEditingTask(false)
                   if (panel.loadedContent) panel.loadedContent.forceActiveFocus()
@@ -2360,7 +2362,7 @@ BarWidget {
                     implicitHeight: loader.implicitHeight
 
                     // Keyboard selection (Up/Down select, Alt+Up/Down move, Space toggle)
-                    readonly property bool isSelected: modelData.itemType === "task" && root.selectedLine === modelData.lineIndex && root.editingLineIndex !== modelData.lineIndex
+                    readonly property bool isSelected: modelData.itemType === "task" && root.selectedLine === modelData.lineIndex
 
                     Rectangle {
                       anchors.fill: parent
